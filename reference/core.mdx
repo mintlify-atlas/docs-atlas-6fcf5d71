@@ -1,0 +1,360 @@
+---
+title: "@loopback/core — Application, Components, and Lifecycle"
+description: "API reference for @loopback/core: Application class, Component interface, Server, LifeCycleObserver, @lifeCycleObserver decorator, CoreBindings, and CoreTags."
+keywords: ["loopback", "core", "application", "component", "server", "lifecycle observer", "CoreBindings", "CoreTags"]
+---
+
+`@loopback/core` is the foundational framework package for LoopBack 4. It provides the `Application` class—your app's IoC container—along with the interfaces and decorators needed to wire together servers, components, and lifecycle observers. The package re-exports everything from `@loopback/context`, so application code only needs to import from `@loopback/core`.
+
+```bash
+npm install @loopback/core
+```
+
+## Application class
+
+`Application` extends `Context` and implements `LifeCycleObserver`. It is the root container for all framework artifacts. When you create an application, it automatically binds `CoreBindings.APPLICATION_INSTANCE`, `CoreBindings.APPLICATION_CONFIG`, and a `LifeCycleObserverRegistry`.
+
+```typescript
+export class Application extends Context implements LifeCycleObserver {
+  public readonly options: ApplicationConfig;
+  public get state(): string;
+
+  constructor(config?: ApplicationConfig, parent?: Context);
+}
+```
+
+<AccordionGroup>
+  <Accordion title="component">
+
+```typescript
+public component<T extends Component = Component>(
+  componentCtor: Constructor<T>,
+  nameOrOptions?: string | BindingFromClassOptions,
+): Binding<T>
+```
+
+Registers a component class and immediately mounts all artifacts it declares (controllers, providers, services, servers, life cycle observers, and nested components). The component is bound under the `components` namespace with `BindingScope.SINGLETON`.
+
+```typescript
+import {RestComponent} from '@loopback/rest';
+
+app.component(RestComponent);
+```
+
+  </Accordion>
+
+  <Accordion title="controller">
+
+```typescript
+controller<T>(
+  controllerCtor: ControllerClass<T>,
+  nameOrOptions?: string | BindingFromClassOptions,
+): Binding<T>
+```
+
+Binds a controller class under `controllers.<ClassName>` with `BindingScope.TRANSIENT` (a new instance per request). Returns the `Binding` so you can further configure it.
+
+```typescript
+app.controller(TodoController).tag('todo');
+```
+
+  </Accordion>
+
+  <Accordion title="server / servers / getServer">
+
+```typescript
+public server<T extends Server>(
+  ctor: Constructor<T>,
+  nameOrOptions?: string | BindingFromClassOptions,
+): Binding<T>
+
+public servers<T extends Server>(ctors: Constructor<T>[]): Binding[]
+
+public async getServer<T extends Server>(
+  target: Constructor<T> | string,
+): Promise<T>
+```
+
+Registers one or more server constructors under `servers.<ClassName>`. Servers are automatically tagged as life cycle observers. Use `getServer` to retrieve a running instance after the app starts.
+
+```typescript
+app.server(RestServer);
+const restServer = await app.getServer(RestServer);
+```
+
+  </Accordion>
+
+  <Accordion title="service">
+
+```typescript
+public service<S>(
+  cls: ServiceOrProviderClass<S>,
+  nameOrOptions?: string | ServiceOptions,
+): Binding<S>
+```
+
+Binds a service class or provider class under the `services` namespace. Both plain classes (bound via `toClass`) and `Provider` implementations (bound via `toProvider`) are accepted.
+
+```typescript
+@injectable({scope: BindingScope.SINGLETON})
+export class LogService {
+  log(msg: string) { console.log(msg); }
+}
+
+app.service(LogService);
+```
+
+  </Accordion>
+
+  <Accordion title="configure / getConfig">
+
+```typescript
+// Inherited from Context
+configure<ConfigValueType = BoundValue>(
+  key: BindingAddress,
+): Binding<ConfigValueType>
+
+getConfig<ConfigValueType>(
+  key: BindingAddress,
+  propertyPath?: string,
+  resolutionOptions?: ResolutionOptions,
+): Promise<ConfigValueType | undefined>
+```
+
+Creates a companion `<key>:$config` binding that stores configuration for the target binding. Use `@config()` inside the target class to inject its own configuration.
+
+```typescript
+app.configure('servers.RestServer').to({port: 3000});
+```
+
+  </Accordion>
+
+  <Accordion title="init / start / stop">
+
+```typescript
+public async init(): Promise<void>
+public async start(): Promise<void>
+public async stop(): Promise<void>
+```
+
+Drives the application lifecycle:
+
+- `init` — runs `init()` on all registered `LifeCycleObserver` bindings (called automatically by `start` on the first call).
+- `start` — runs `start()` on all observers; transitions the app through `starting → started`.
+- `stop` — runs `stop()` on all observers in reverse order; transitions through `stopping → stopped`.
+
+All three methods are idempotent—calling them when the application is already in the target state is a no-op.
+
+  </Accordion>
+
+  <Accordion title="onInit / onStart / onStop">
+
+```typescript
+public onInit(fn: () => ValueOrPromise<void>): Binding<LifeCycleObserver>
+public onStart(fn: () => ValueOrPromise<void>): Binding<LifeCycleObserver>
+public onStop(fn: () => ValueOrPromise<void>): Binding<LifeCycleObserver>
+```
+
+Convenience methods that register inline functions as life cycle observer hooks without creating a full observer class.
+
+```typescript
+app.onStart(async () => {
+  console.log('Application starting...');
+});
+```
+
+  </Accordion>
+
+  <Accordion title="lifeCycleObserver">
+
+```typescript
+public lifeCycleObserver<T extends LifeCycleObserver>(
+  ctor: Constructor<T>,
+  nameOrOptions?: string | BindingFromClassOptions,
+): Binding<T>
+```
+
+Registers a class that implements `LifeCycleObserver` under the `lifeCycleObservers` namespace with `BindingScope.SINGLETON`.
+
+  </Accordion>
+
+  <Accordion title="interceptor">
+
+```typescript
+public interceptor(
+  interceptor: Interceptor | Constructor<Provider<Interceptor>>,
+  nameOrOptions?: string | InterceptorBindingOptions,
+): Binding
+```
+
+Registers a global interceptor function or provider class.
+
+  </Accordion>
+
+  <Accordion title="setMetadata">
+
+```typescript
+public setMetadata(metadata: ApplicationMetadata): void
+```
+
+Stores `package.json` metadata (`name`, `version`, `description`) in `CoreBindings.APPLICATION_METADATA`. `@loopback/boot` calls this automatically.
+
+  </Accordion>
+</AccordionGroup>
+
+### ApplicationConfig
+
+```typescript
+export interface ApplicationConfig {
+  name?: string;
+  shutdown?: ShutdownOptions;
+  [prop: string]: any;
+}
+
+export type ShutdownOptions = {
+  signals?: NodeJS.Signals[]; // default: ['SIGTERM']
+  gracePeriod?: number;        // milliseconds before forced exit
+};
+```
+
+---
+
+## Component interface
+
+A component bundles related artifacts so they can be contributed to an application as a unit. Declare any subset of the fields below.
+
+```typescript
+export interface Component {
+  controllers?: ControllerClass[];
+  providers?: ProviderMap;          // { [key: string]: Constructor<Provider<BoundValue>> }
+  classes?: ClassMap;               // { [key: string]: Constructor<BoundValue> }
+  servers?: { [name: string]: Constructor<Server> };
+  lifeCycleObservers?: Constructor<LifeCycleObserver>[];
+  services?: ServiceOrProviderClass[];
+  bindings?: Binding[];
+  components?: Constructor<Component>[];
+  [prop: string]: any;
+}
+```
+
+<Tip>
+Prefer components over calling `app.controller()` / `app.service()` individually in large codebases—components make it easy to publish and reuse a set of features as a package.
+</Tip>
+
+```typescript
+export class ProductComponent {
+  controllers = [ProductController];
+  providers = {
+    'authentication.strategies.jwt': JwtStrategy,
+  };
+  services = [ProductService];
+}
+
+app.component(ProductComponent);
+```
+
+---
+
+## Server interface
+
+```typescript
+export interface Server extends LifeCycleObserver {
+  readonly listening: boolean;
+}
+```
+
+Every server must also implement `LifeCycleObserver` (`start` and `stop`). It is recommended that each server creates its own child `Context` so server-specific bindings do not pollute the parent application context.
+
+---
+
+## LifeCycleObserver interface and @lifeCycleObserver decorator
+
+```typescript
+export interface LifeCycleObserver {
+  init?(...injectedArgs: unknown[]): ValueOrPromise<void>;
+  start?(...injectedArgs: unknown[]): ValueOrPromise<void>;
+  stop?(...injectedArgs: unknown[]): ValueOrPromise<void>;
+}
+```
+
+Implement any combination of `init`, `start`, and `stop`. The framework calls them in binding order during the corresponding application phase.
+
+### @lifeCycleObserver decorator
+
+```typescript
+function lifeCycleObserver(group?: string, ...specs: BindingSpec[]): ClassDecorator
+```
+
+Marks a class as a life cycle observer and optionally assigns it to a named group. Observers in the same group run concurrently; groups run in the order specified by `LifeCycleObserverOptions`.
+
+```typescript
+import {lifeCycleObserver, LifeCycleObserver} from '@loopback/core';
+
+@lifeCycleObserver('database')
+export class DatabaseObserver implements LifeCycleObserver {
+  async start() {
+    await connectToDatabase();
+  }
+
+  async stop() {
+    await disconnectFromDatabase();
+  }
+}
+```
+
+---
+
+## CoreBindings
+
+`CoreBindings` is a namespace of `BindingKey` constants for well-known framework bindings.
+
+```typescript
+export namespace CoreBindings {
+  // Application
+  const APPLICATION_INSTANCE: BindingKey<Application>;  // 'application.instance'
+  const APPLICATION_CONFIG: BindingKey<ApplicationConfig>; // 'application.config'
+  const APPLICATION_METADATA: BindingKey<ApplicationMetadata>; // 'application.metadata'
+
+  // Namespaces (string values used as key prefixes)
+  const SERVERS = 'servers';
+  const COMPONENTS = 'components';
+  const CONTROLLERS = 'controllers';
+
+  // Current request context (set by REST infrastructure)
+  const CONTROLLER_CLASS: BindingKey<ControllerClass>;    // 'controller.current.ctor'
+  const CONTROLLER_METHOD_NAME: BindingKey<string>;       // 'controller.current.operation'
+  const CONTROLLER_CURRENT: BindingKey<unknown>;          // 'controller.current'
+  const CONTROLLER_METHOD_META: string;                   // 'controller.method.meta'
+
+  // Lifecycle
+  const LIFE_CYCLE_OBSERVERS = 'lifeCycleObservers';
+  const LIFE_CYCLE_OBSERVER_REGISTRY: BindingKey<LifeCycleObserverRegistry>;
+  const LIFE_CYCLE_OBSERVER_OPTIONS: BindingKey<LifeCycleObserverOptions>;
+}
+```
+
+---
+
+## CoreTags
+
+`CoreTags` is a namespace of string constants used as binding tag names.
+
+```typescript
+export namespace CoreTags {
+  const COMPONENT = 'component';
+  const SERVER = 'server';
+  const CONTROLLER = 'controller';
+  const SERVICE = 'service';
+  const SERVICE_INTERFACE = 'serviceInterface';
+  const LIFE_CYCLE_OBSERVER = 'lifeCycleObserver';
+  const LIFE_CYCLE_OBSERVER_GROUP = 'lifeCycleObserverGroup';
+  const EXTENSION_FOR = 'extensionFor';
+  const EXTENSION_POINT = 'extensionPoint';
+}
+```
+
+Use these constants in `ctx.findByTag()` to locate all bindings of a specific artifact type:
+
+```typescript
+const servers = ctx.findByTag(CoreTags.SERVER);
+```

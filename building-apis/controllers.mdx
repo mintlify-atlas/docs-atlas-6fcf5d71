@@ -1,0 +1,442 @@
+---
+title: 'LoopBack 4 Controllers: HTTP Handlers with Decorators'
+description: 'Create REST controllers with TypeScript decorators, map HTTP verbs to methods, bind path/query parameters, and validate request bodies using OpenAPI schemas.'
+keywords: ['loopback', 'controller', 'decorator', 'rest', 'get', 'post', 'put', 'patch', 'del', 'requestBody', 'param']
+---
+
+A controller is a TypeScript class whose methods implement the operations exposed by your API. It bridges the HTTP layer and your domain logic: decorators on each method tell LoopBack which HTTP verb and path to associate with that operation, how to extract parameters from the request, and what schema to use for request and response bodies. The framework reads those decorators, builds an in-memory OpenAPI specification, and registers the corresponding routes automatically when you call `app.controller(MyController)`.
+
+## What a controller does
+
+When a request arrives, LoopBack's sequence identifies the matching route, parses parameters and body according to the OpenAPI spec derived from the decorators, and invokes the controller method with the parsed, type-coerced arguments. Whatever the method returns becomes the response body. If the method throws an `HttpErrors` instance, that HTTP status code is sent to the client.
+
+Controllers operate only on processed inputs and abstractions (repositories, services). They never read raw `req` or `res` objects unless you inject them explicitly.
+
+## Creating a basic REST controller
+
+The simplest controller responds to a single route:
+
+```typescript
+import {get, param} from '@loopback/rest';
+
+export class GreetController {
+  @get('/', {
+    responses: {
+      '200': {
+        description: 'greeting text',
+        content: {
+          'application/json': {
+            schema: {type: 'string'},
+          },
+        },
+      },
+    },
+  })
+  greet(@param.query.string('name') name: string) {
+    return `hello ${name}`;
+  }
+}
+```
+
+Register it in your application:
+
+```typescript
+app.controller(GreetController);
+```
+
+## HTTP method decorators
+
+All HTTP method decorators are exported from `@loopback/rest`. Each accepts the route path as the first argument and an optional partial OpenAPI `OperationObject` as the second.
+
+| Decorator | HTTP verb |
+|-----------|-----------|
+| `@get(path, spec?)` | GET |
+| `@post(path, spec?)` | POST |
+| `@put(path, spec?)` | PUT |
+| `@patch(path, spec?)` | PATCH |
+| `@del(path, spec?)` | DELETE |
+
+<Note>
+The delete decorator is `@del`, not `@delete`, because `delete` is a reserved keyword in JavaScript.
+</Note>
+
+## Parameter binding
+
+LoopBack reads parameter decorators to know where to extract each argument from the incoming request and what type to coerce it to.
+
+### Path parameters
+
+Use `@param.path.<type>(name)` for values embedded in the URL segment:
+
+```typescript
+@get('/todos/{id}')
+async findById(
+  @param.path.number('id') id: number,
+): Promise<Todo> {
+  return this.todoRepository.findById(id);
+}
+```
+
+The `{id}` placeholder in the path string uses OpenAPI syntax. LoopBack converts the string from the URL to a JavaScript `number` automatically.
+
+### Query parameters
+
+Use `@param.query.<type>(name)` for values from the query string:
+
+```typescript
+@get('/messages')
+async list(
+  @param.query.number('limit') limit = 10,
+): Promise<HelloMessage[]> {
+  if (limit > 100) limit = 100;
+  return this.repository.find({limit});
+}
+```
+
+### Filter and where parameters
+
+For repository-style filtering, use the `@param.filter` and `@param.where` shorthand decorators, which generate the correct OpenAPI schema for LoopBack filter objects:
+
+```typescript
+@get('/todos')
+async find(
+  @param.filter(Todo) filter?: Filter<Todo>,
+): Promise<Todo[]> {
+  return this.todoRepository.find(filter);
+}
+```
+
+### Header parameters
+
+Use `@param.header.<type>(name)` to read values from HTTP headers:
+
+```typescript
+async checkVersion(
+  @param.header.string('x-api-version') version: string,
+) { ... }
+```
+
+## Request body
+
+Decorate the body parameter with `@requestBody()`. LoopBack infers the schema from the TypeScript type if you provide a model class, or you can supply an explicit schema:
+
+```typescript
+@post('/todos', {
+  responses: {
+    '200': {
+      description: 'Todo model instance',
+      content: {'application/json': {schema: getModelSchemaRef(Todo)}},
+    },
+  },
+})
+async create(
+  @requestBody({
+    content: {
+      'application/json': {
+        schema: getModelSchemaRef(Todo, {
+          title: 'NewTodo',
+          exclude: ['id'],
+        }),
+      },
+    },
+  })
+  todo: Omit<Todo, 'id'>,
+): Promise<Todo> {
+  return this.todoRepository.create(todo);
+}
+```
+
+`getModelSchemaRef` introspects the `@model`/`@property` decorators on your model class to build a JSON schema. You can pass options like `exclude` to omit fields (such as server-generated `id`), or `partial: true` for PATCH operations.
+
+## Error handling
+
+Import `HttpErrors` from `@loopback/rest` to throw typed HTTP errors:
+
+```typescript
+import {HttpErrors} from '@loopback/rest';
+
+async create(...): Promise<Todo> {
+  if (todo.remindAtAddress) {
+    const geo = await this.geoService.geocode(todo.remindAtAddress);
+    if (!geo[0]) {
+      throw new HttpErrors.BadRequest(
+        `Address not found: ${todo.remindAtAddress}`,
+      );
+    }
+  }
+  return this.todoRepository.create(todo);
+}
+```
+
+Common error constructors and their HTTP status codes:
+
+| Constructor | Status code |
+|-------------|-------------|
+| `HttpErrors.BadRequest` | 400 |
+| `HttpErrors.Unauthorized` | 401 |
+| `HttpErrors.Forbidden` | 403 |
+| `HttpErrors.NotFound` | 404 |
+| `HttpErrors.UnprocessableEntity` | 422 |
+| `HttpErrors.InternalServerError` | 500 |
+
+## Full CRUD controller example
+
+The Todo example from the repository shows the complete CRUD pattern with all five HTTP method decorators, path parameters, request bodies, and repository injection:
+
+```typescript
+import {inject} from '@loopback/core';
+import {
+  Count,
+  CountSchema,
+  Filter,
+  FilterExcludingWhere,
+  repository,
+  Where,
+} from '@loopback/repository';
+import {
+  del,
+  get,
+  getModelSchemaRef,
+  HttpErrors,
+  param,
+  patch,
+  post,
+  put,
+  requestBody,
+} from '@loopback/rest';
+import {Todo} from '../models';
+import {TodoRepository} from '../repositories';
+import {Geocoder} from '../services';
+
+export class TodoController {
+  constructor(
+    @repository(TodoRepository)
+    public todoRepository: TodoRepository,
+    @inject('services.Geocoder') protected geoService: Geocoder,
+  ) {}
+
+  @post('/todos', {
+    responses: {
+      '200': {
+        description: 'Todo model instance',
+        content: {'application/json': {schema: getModelSchemaRef(Todo)}},
+      },
+    },
+  })
+  async create(
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: getModelSchemaRef(Todo, {
+            title: 'NewTodo',
+            exclude: ['id'],
+          }),
+        },
+      },
+    })
+    todo: Omit<Todo, 'id'>,
+  ): Promise<Todo> {
+    if (todo.remindAtAddress) {
+      const geo = await this.geoService.geocode(todo.remindAtAddress);
+      if (!geo[0]) {
+        throw new HttpErrors.BadRequest(
+          `Address not found: ${todo.remindAtAddress}`,
+        );
+      }
+      todo.remindAtGeo = `${geo[0].y},${geo[0].x}`;
+    }
+    return this.todoRepository.create(todo);
+  }
+
+  @get('/todos/{id}', {
+    responses: {
+      '200': {
+        description: 'Todo model instance',
+        content: {
+          'application/json': {
+            schema: getModelSchemaRef(Todo, {includeRelations: true}),
+          },
+        },
+      },
+    },
+  })
+  async findById(
+    @param.path.number('id') id: number,
+    @param.filter(Todo, {exclude: 'where'}) filter?: FilterExcludingWhere<Todo>,
+  ): Promise<Todo> {
+    return this.todoRepository.findById(id, filter);
+  }
+
+  @get('/todos', {
+    responses: {
+      '200': {
+        description: 'Array of Todo model instances',
+        content: {
+          'application/json': {
+            schema: {
+              type: 'array',
+              items: getModelSchemaRef(Todo, {includeRelations: true}),
+            },
+          },
+        },
+      },
+    },
+  })
+  async find(
+    @param.filter(Todo) filter?: Filter<Todo>,
+  ): Promise<Todo[]> {
+    return this.todoRepository.find(filter);
+  }
+
+  @put('/todos/{id}', {
+    responses: {
+      '204': {
+        description: 'Todo PUT success',
+      },
+    },
+  })
+  async replaceById(
+    @param.path.number('id') id: number,
+    @requestBody() todo: Todo,
+  ): Promise<void> {
+    await this.todoRepository.replaceById(id, todo);
+  }
+
+  @patch('/todos/{id}', {
+    responses: {
+      '204': {
+        description: 'Todo PATCH success',
+      },
+    },
+  })
+  async updateById(
+    @param.path.number('id') id: number,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: getModelSchemaRef(Todo, {partial: true}),
+        },
+      },
+    })
+    todo: Todo,
+  ): Promise<void> {
+    await this.todoRepository.updateById(id, todo);
+  }
+
+  @del('/todos/{id}', {
+    responses: {
+      '204': {
+        description: 'Todo DELETE success',
+      },
+    },
+  })
+  async deleteById(
+    @param.path.number('id') id: number,
+  ): Promise<void> {
+    await this.todoRepository.deleteById(id);
+  }
+
+  @get('/todos/count', {
+    responses: {
+      '200': {
+        description: 'Todo model count',
+        content: {'application/json': {schema: CountSchema}},
+      },
+    },
+  })
+  async count(
+    @param.where(Todo) where?: Where<Todo>,
+  ): Promise<Count> {
+    return this.todoRepository.count(where);
+  }
+
+  @patch('/todos', {
+    responses: {
+      '200': {
+        description: 'Todo PATCH success count',
+        content: {'application/json': {schema: CountSchema}},
+      },
+    },
+  })
+  async updateAll(
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: getModelSchemaRef(Todo, {partial: true}),
+        },
+      },
+    })
+    todo: Todo,
+    @param.where(Todo) where?: Where<Todo>,
+  ): Promise<Count> {
+    return this.todoRepository.updateAll(todo, where);
+  }
+}
+```
+
+## Generating controllers with the CLI
+
+The `lb4 controller` command scaffolds controllers interactively. Two generation modes are available:
+
+<Tabs>
+  <Tab title="Empty controller">
+    Generates a controller class with no methods. Use this when you want to write all operations by hand.
+
+    ```bash
+    lb4 controller
+    # Choose: Empty Controller
+    ```
+  </Tab>
+  <Tab title="REST controller with CRUD methods">
+    Generates all seven CRUD methods (`create`, `count`, `find`, `findById`, `updateById`, `replaceById`, `deleteById`) pre-wired to a repository. The output matches the TodoController pattern above.
+
+    ```bash
+    lb4 controller
+    # Choose: REST Controller with CRUD functions
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+Generated CRUD controllers include all seven methods. Delete any operations you do not want to expose before deploying to production.
+</Warning>
+
+## Customizing the OpenAPI spec
+
+If the default `operationId` naming (`ControllerName.methodName`) does not match your needs, implement an `OASEnhancer` to post-process the generated specification:
+
+```typescript
+import {injectable} from '@loopback/core';
+import {
+  mergeOpenAPISpec,
+  asSpecEnhancer,
+  OASEnhancer,
+  OpenApiSpec,
+} from '@loopback/rest';
+
+@injectable(asSpecEnhancer)
+export class OperationSpecEnhancer implements OASEnhancer {
+  name = 'operationIdEnhancer';
+
+  modifySpec(spec: OpenApiSpec): OpenApiSpec {
+    const paths = spec.paths;
+    for (const path in paths) {
+      for (const op in path) {
+        const operationId = paths[path][op].operationId;
+        if (operationId)
+          paths[path][op].operationId = operationId.replace('.', '-');
+      }
+    }
+    return spec;
+  }
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="Application" icon="server" href="/building-apis/application">
+    Register controllers with the Application class.
+  </Card>
+  <Card title="Routing" icon="route" href="/building-apis/routing">
+    Understand how LoopBack resolves requests to controller methods.
+  </Card>
+</CardGroup>

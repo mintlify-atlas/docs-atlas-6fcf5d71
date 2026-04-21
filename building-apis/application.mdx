@@ -1,0 +1,224 @@
+---
+title: 'Building LoopBack 4 Applications: The Application Class'
+description: 'Learn how to create and configure a LoopBack 4 Application subclass, use mixins, register controllers, and manage application lifecycle.'
+keywords: ['loopback', 'application', 'ApplicationConfig', 'BootMixin', 'RepositoryMixin', 'lifecycle']
+---
+
+The `Application` class is the central registry and entry point for every LoopBack 4 project. It extends `Context`—LoopBack's IoC container—so every component, controller, server, and binding you register becomes part of a single dependency graph that the framework resolves at runtime. Rather than using `Application` directly, you always subclass it so you can organize configuration, wire up components, and hook into lifecycle events in one place.
+
+## What the Application class provides
+
+`Application` (from `@loopback/core`) manages three concerns:
+
+- **Registry** — stores bindings for controllers, servers, components, datasources, and arbitrary values via `Context`.
+- **Lifecycle** — exposes `start()` and `stop()` methods that propagate to every bound server.
+- **Configuration** — accepts an `ApplicationConfig` object and automatically creates bindings that are later injected through dependency injection.
+
+<Note>
+Most real applications extend `RestApplication` from `@loopback/rest` rather than raw `Application`. `RestApplication` automatically binds a `RestServer` and proxies all REST-specific methods such as `route()`, `sequence()`, and `mountExpressRouter()`.
+</Note>
+
+## Creating a subclass
+
+Subclassing lets you pass configuration to the base class constructor, register components and controllers, and override lifecycle hooks.
+
+```typescript
+import {Application} from '@loopback/core';
+import {RestComponent} from '@loopback/rest';
+import {UserController, ShoppingCartController} from './controllers';
+
+export class WidgetApplication extends Application {
+  constructor() {
+    super({
+      rest: {
+        port: 8080,
+      },
+    });
+
+    const app = this;
+    app.component(RestComponent);
+    app.controller(UserController);
+    app.controller(ShoppingCartController);
+  }
+
+  async stop() {
+    console.log('Widget application is shutting down...');
+    await super.stop();
+  }
+}
+```
+
+<Tip>
+Use `const app = this;` inside the constructor for clarity when chaining multiple registrations. It has no runtime effect but makes the intent obvious at a glance.
+</Tip>
+
+## Configuring host, port, and basePath
+
+Pass a `RestServerConfig` inside the `rest` key of the constructor argument. LoopBack creates bindings for these values and injects them into the `RestServer`.
+
+```typescript
+import {RestApplication} from '@loopback/rest';
+
+export class MyApplication extends RestApplication {
+  constructor() {
+    super({
+      rest: {
+        port: 4000,
+        host: 'my-host',
+        basePath: '/api',
+      },
+    });
+  }
+}
+```
+
+<Note>
+Constructor-based configuration does not support binding configuration such as component binding, provider binding, or binding scopes. Use the manual binding approach for those cases.
+</Note>
+
+## Lifecycle methods
+
+`Application` provides `start()` and `stop()` hooks that call through to all bound servers. Override them to perform setup and teardown work.
+
+<Steps>
+  <Step title="Override start() for async setup">
+    ```typescript
+    async start() {
+      // Connect to external systems before the HTTP server accepts traffic
+      await super.start();
+    }
+    ```
+  </Step>
+  <Step title="Override stop() for graceful shutdown">
+    ```typescript
+    async stop() {
+      // Flush buffers, close connections, etc.
+      console.log('Application shutting down...');
+      await super.stop();
+    }
+    ```
+  </Step>
+</Steps>
+
+Always call `await super.start()` and `await super.stop()` so the framework can start and stop bound servers correctly.
+
+## Using mixins
+
+Mixins extend `Application` with additional capabilities. You stack them with a chain of calls.
+
+| Mixin | Package | What it adds |
+|-------|---------|--------------|
+| `BootMixin` | `@loopback/boot` | Auto-discovers controllers, repositories, and datasources by convention |
+| `RepositoryMixin` | `@loopback/repository` | Adds `repository()` and `dataSource()` helper methods |
+| `ServiceMixin` | `@loopback/service-proxy` | Adds `serviceProvider()` helper method |
+
+The Todo example application from the repository demonstrates all three mixins working together:
+
+```typescript
+import {BootMixin} from '@loopback/boot';
+import {ApplicationConfig} from '@loopback/core';
+import {RepositoryMixin} from '@loopback/repository';
+import {Request, Response, RestApplication} from '@loopback/rest';
+import {
+  RestExplorerBindings,
+  RestExplorerComponent,
+} from '@loopback/rest-explorer';
+import {ServiceMixin} from '@loopback/service-proxy';
+import morgan from 'morgan';
+import path from 'path';
+import {MySequence} from './sequence';
+
+export {ApplicationConfig};
+
+export class TodoListApplication extends BootMixin(
+  ServiceMixin(RepositoryMixin(RestApplication)),
+) {
+  constructor(options: ApplicationConfig = {}) {
+    super(options);
+
+    // Set up the custom sequence
+    this.sequence(MySequence);
+
+    // Set up default home page
+    this.static('/', path.join(__dirname, '../public'));
+
+    // Customize @loopback/rest-explorer configuration here
+    this.configure(RestExplorerBindings.COMPONENT).to({
+      path: '/explorer',
+    });
+    this.component(RestExplorerComponent);
+
+    this.projectRoot = __dirname;
+    // Customize @loopback/boot Booter Conventions here
+    this.bootOptions = {
+      controllers: {
+        dirs: ['controllers'],
+        extensions: ['.controller.js'],
+        nested: true,
+      },
+    };
+  }
+}
+```
+
+The mixin chain reads right-to-left: `RestApplication` is the base, then `RepositoryMixin` wraps it, then `ServiceMixin`, then `BootMixin` on the outside.
+
+## Registering artifacts manually
+
+When you are not using `BootMixin`, register artifacts explicitly in the constructor.
+
+<Tabs>
+  <Tab title="Controllers">
+    ```typescript
+    app.controller(FooController);
+    app.controller(BarController);
+    ```
+  </Tab>
+  <Tab title="Components">
+    ```typescript
+    app.component(RestComponent);
+    app.component(MyAuthComponent);
+    ```
+  </Tab>
+  <Tab title="Servers">
+    ```typescript
+    app.server(RestServer);
+    // Named servers are bound as 'servers.public' and 'servers.private'
+    app.server(RestServer, 'public');
+    app.server(RestServer, 'private');
+    ```
+  </Tab>
+  <Tab title="Advanced bindings">
+    ```typescript
+    this.bind('fooCorp.logger').toProvider(LogProvider);
+    this.bind('repositories.widget')
+      .toClass(WidgetRepository)
+      .inScope(BindingScope.SINGLETON);
+    ```
+  </Tab>
+</Tabs>
+
+## Automatic artifact discovery with BootMixin
+
+`BootMixin` scans your project at startup and registers artifacts based on file naming conventions. No manual `app.controller()` calls are needed.
+
+| Artifact | Directory | File extension |
+|----------|-----------|----------------|
+| Controller | `controllers/` | `.controller.ts` |
+| DataSource | `datasources/` | `.datasource.ts` |
+| Repository | `repositories/` | `.repository.ts` |
+| Model | `models/` | `.model.ts` |
+
+Configure the booter by setting `this.bootOptions` and `this.projectRoot` in the constructor, as shown in the Todo example above.
+
+<CardGroup cols={2}>
+  <Card title="Controllers" icon="code" href="/building-apis/controllers">
+    Learn how to write controller classes with HTTP method decorators.
+  </Card>
+  <Card title="Routing" icon="route" href="/building-apis/routing">
+    Understand how LoopBack maps requests to controller methods.
+  </Card>
+  <Card title="Request & Response" icon="arrows-left-right" href="/building-apis/request-response">
+    Explore the sequence pipeline that processes every request.
+  </Card>
+</CardGroup>

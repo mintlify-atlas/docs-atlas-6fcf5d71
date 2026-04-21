@@ -1,0 +1,303 @@
+---
+title: 'LoopBack 4 Request/Response Cycle: Sequences and Middleware'
+description: 'Understand how LoopBack 4 processes every HTTP request through its sequence pipeline, customize sequence actions, handle errors, and access raw request objects.'
+keywords: ['loopback', 'sequence', 'middleware', 'findRoute', 'parseParams', 'invokeMethod', 'send', 'reject', 'error handling']
+---
+
+Every HTTP request that reaches a LoopBack 4 application flows through a *sequence*—a pipeline that finds the matching route, parses its parameters, invokes the handler, and sends the response. The sequence is the single gatekeeper for all requests, whether they target controller endpoints or static files mounted via Express. Understanding the sequence lets you add cross-cutting concerns like authentication, logging, and custom error formatting without touching individual controllers.
+
+## The two sequence flavors
+
+LoopBack 4's `@loopback/rest` package ships two sequence implementations:
+
+<Tabs>
+  <Tab title="MiddlewareSequence (current default)">
+    Introduced in `@loopback/rest` v6.0.0, this is the default for all newly generated applications. It processes requests through cascading middleware groups, making it easy to add functionality by registering middleware at a named group rather than editing a class.
+
+    ```typescript
+    // examples/todo/src/sequence.ts
+    import {MiddlewareSequence} from '@loopback/rest';
+
+    export class MySequence extends MiddlewareSequence {}
+    ```
+
+    You set it on the application with:
+
+    ```typescript
+    this.sequence(MySequence);
+    ```
+  </Tab>
+  <Tab title="DefaultSequence (action-based)">
+    The original sequence from `@loopback/rest`. It has five injected helper methods assembled in a `handle()` method. Still fully supported; `MiddlewareSequence` is preferred for new applications because it allows middleware to be added without subclassing.
+
+    ```typescript
+    import {DefaultSequence} from '@loopback/rest';
+
+    class MySequence extends DefaultSequence {
+      async handle(context: RequestContext) {
+        try {
+          const {request, response} = context;
+          const route = this.findRoute(request);
+          const args = await this.parseParams(request, route);
+          const result = await this.invoke(route, args);
+          this.send(response, result);
+        } catch (err) {
+          this.reject(context, err);
+        }
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Default sequence actions
+
+Whether you use `DefaultSequence` or `MiddlewareSequence`, the same five logical steps process every request:
+
+<Steps>
+  <Step title="FindRoute">
+    Matches the incoming HTTP method and path against the routing table to find a `ControllerRoute` or `ExternalRoute`. If no route matches, the next steps never run and a 404 is returned.
+  </Step>
+  <Step title="ParseParams">
+    Extracts parameters from the request's path, query string, headers, and body according to the OpenAPI spec generated from your controller decorators. It coerces string values to their declared types and validates them. A schema mismatch produces a `422 Unprocessable Entity` before your controller runs.
+  </Step>
+  <Step title="InvokeMethod">
+    Calls the controller method (or non-controller handler) with the parsed arguments. For controller endpoints, the return value becomes the response payload. For non-controller endpoints such as Express middleware, control passes to those handlers.
+  </Step>
+  <Step title="Send">
+    Serializes the value returned by `InvokeMethod` and writes it to the HTTP response. It performs sanity checks before writing, for example ensuring the response hasn't already been sent.
+  </Step>
+  <Step title="Reject">
+    Catches any error thrown in the steps above and converts it into an HTTP error response. `HttpErrors` instances map directly to their status codes. Unrecognized errors produce a `500 Internal Server Error`.
+  </Step>
+</Steps>
+
+The `DefaultSequence.handle()` method in the source shows how these five actions compose:
+
+```typescript
+async handle(context: RequestContext): Promise<void> {
+  try {
+    const {request, response} = context;
+    // Invoke registered Express middleware first
+    const finished = await this.invokeMiddleware(context);
+    if (finished) {
+      return;
+    }
+    const route = this.findRoute(request);
+    const args = await this.parseParams(request, route);
+    const result = await this.invoke(route, args);
+    this.send(response, result);
+  } catch (error) {
+    this.reject(context, error);
+  }
+}
+```
+
+## Middleware-based sequence groups
+
+`MiddlewareSequence` processes requests through ordered middleware groups. The default group order from `RestMiddlewareGroups` is:
+
+| Group | Responsibility |
+|-------|---------------|
+| `sendResponse` | Wraps downstream groups to capture the result or error and write the HTTP response |
+| `cors` | Enforces CORS headers |
+| `apiSpec` | Serves the OpenAPI spec at `/openapi.json` and `/openapi.yaml` |
+| `middleware` | General-purpose middleware (your custom middleware lands here by default) |
+| `findRoute` | Matches the request to a route |
+| `authentication` | Enforces authentication, runs after route is known |
+| `parseParams` | Parses and validates request parameters |
+| `invokeMethod` | Calls the controller method |
+
+Middleware groups are cascading: `sendResponse` wraps all the others so it can both capture the final result and catch errors from any group below it.
+
+<Warning>
+Any middleware group registered after `invokeMethod` is unreachable. `MiddlewareSequence` validates the group order at startup and throws an error if you try to register a group after `invokeMethod`.
+</Warning>
+
+## Adding middleware to the sequence
+
+Register LoopBack middleware on the application or server with `app.middleware()`:
+
+```typescript
+import {Middleware, RequestContext} from '@loopback/rest';
+
+const log: Middleware = async (requestCtx, next) => {
+  const {request} = requestCtx;
+  console.log(`Incoming: ${request.method} ${request.path}`);
+  const result = await next();
+  console.log(`Outgoing: ${request.method} ${request.path}`);
+  return result;
+};
+
+app.middleware(log);
+```
+
+To bind middleware to a specific group, pass options:
+
+```typescript
+import {RestMiddlewareGroups} from '@loopback/rest';
+
+app.middleware(log, {
+  group: RestMiddlewareGroups.AUTHENTICATION,
+  upstreamGroups: [RestMiddlewareGroups.FIND_ROUTE],
+});
+```
+
+## Adding Express middleware
+
+Register Express middleware factories using `app.expressMiddleware()`. The Todo application uses this pattern for `morgan` HTTP request logging:
+
+```typescript
+import morgan from 'morgan';
+import {Request, Response} from '@loopback/rest';
+
+const morganFactory = (config?: morgan.Options<Request, Response>) => {
+  return morgan('combined', config);
+};
+
+const defaultConfig: morgan.Options<Request, Response> = {
+  stream: {
+    write: str => console.log(str),
+  },
+};
+
+app.expressMiddleware(morganFactory, defaultConfig, {
+  injectConfiguration: 'watch',
+  key: 'middleware.morgan',
+});
+```
+
+The `injectConfiguration: 'watch'` option allows configuration changes to take effect without restarting the application.
+
+## Customizing the action-based sequence
+
+If you use `DefaultSequence`, you can add a step by extending it and injecting additional actions:
+
+```typescript
+import {inject} from '@loopback/core';
+import {
+  DefaultSequence,
+  FindRoute,
+  InvokeMethod,
+  ParseParams,
+  Reject,
+  RequestContext,
+  RestBindings,
+  Send,
+} from '@loopback/rest';
+import {AuthenticationBindings, AuthenticateFn} from '@loopback/authentication';
+
+export class MySequence extends DefaultSequence {
+  constructor(
+    @inject(RestBindings.SequenceActions.FIND_ROUTE)
+    protected findRoute: FindRoute,
+    @inject(RestBindings.SequenceActions.PARSE_PARAMS)
+    protected parseParams: ParseParams,
+    @inject(RestBindings.SequenceActions.INVOKE_METHOD)
+    protected invoke: InvokeMethod,
+    @inject(RestBindings.SequenceActions.SEND)
+    public send: Send,
+    @inject(RestBindings.SequenceActions.REJECT)
+    public reject: Reject,
+    @inject(AuthenticationBindings.AUTH_ACTION)
+    protected authenticateRequest: AuthenticateFn,
+  ) {
+    super(findRoute, parseParams, invoke, send, reject);
+  }
+
+  async handle(context: RequestContext) {
+    try {
+      const {request, response} = context;
+      const route = this.findRoute(request);
+      await this.authenticateRequest(request);
+      const args = await this.parseParams(request, route);
+      const result = await this.invoke(route, args);
+      this.send(response, result);
+    } catch (err) {
+      this.reject(context, err);
+    }
+  }
+}
+```
+
+## Accessing raw Request and Response objects
+
+Inject the Express `Request` and `Response` objects into a controller using `RestBindings.Http`:
+
+```typescript
+import {inject} from '@loopback/core';
+import {get, RestBindings, Request, Response} from '@loopback/rest';
+
+export class PingController {
+  constructor(
+    @inject(RestBindings.Http.REQUEST) private req: Request,
+  ) {}
+
+  @get('/ping')
+  ping(): object {
+    return {
+      greeting: 'Hello from LoopBack',
+      url: this.req.url,
+      headers: this.req.headers,
+    };
+  }
+}
+```
+
+You can also inject `RestBindings.Http.RESPONSE` to write a custom response directly, though returning a value from the controller method is the preferred approach.
+
+## Error handling
+
+### Using HttpErrors
+
+Throw `HttpErrors` subclasses from controller methods to send typed HTTP error responses. The `Reject` action in the sequence catches them and maps them to the correct status code:
+
+```typescript
+import {HttpErrors} from '@loopback/rest';
+
+async findById(id: number): Promise<Todo> {
+  const todo = await this.todoRepository.findById(id);
+  if (!todo) {
+    throw new HttpErrors.NotFound(`Todo ${id} not found`);
+  }
+  return todo;
+}
+```
+
+### Non-controller endpoint errors
+
+Errors thrown inside Express middleware mounted via `mountExpressRouter` also reach the `Reject` action, so they are handled consistently.
+
+### Walkthrough: a full request lifecycle
+
+The following is a step-by-step trace of a `GET /ping` request in a scaffolded LoopBack application:
+
+<Steps>
+  <Step title="HTTP server dispatches to sequence">
+    The Node.js HTTP server receives the request and passes it to the sequence's `handle()` method via the `RestServer`.
+  </Step>
+  <Step title="FindRoute matches the controller method">
+    The routing table finds `PingController.ping()` because it is decorated with `@get('/ping')`.
+  </Step>
+  <Step title="ParseParams extracts arguments">
+    No parameters are declared for this route, so `ParseParams` returns an empty argument list.
+  </Step>
+  <Step title="InvokeMethod calls the handler">
+    `InvokeMethod` calls `PingController.ping()` with no arguments. The method returns a JSON object with `greeting`, `date`, `url`, and `headers` properties.
+  </Step>
+  <Step title="Send writes the response">
+    The `Send` action serializes the returned object as JSON and writes it with a `200 OK` status code.
+  </Step>
+  <Step title="Reject is on standby">
+    If any earlier step had thrown, `Reject` would have caught it and sent the appropriate HTTP error response.
+  </Step>
+</Steps>
+
+<CardGroup cols={2}>
+  <Card title="Controllers" icon="code" href="/building-apis/controllers">
+    Define the controller methods that the sequence invokes.
+  </Card>
+  <Card title="Routing" icon="route" href="/building-apis/routing">
+    Learn how FindRoute matches HTTP requests to handlers.
+  </Card>
+</CardGroup>

@@ -1,0 +1,367 @@
+---
+title: "LoopBack 4 CLI Generator Reference Guide"
+description: "Full options reference for every lb4 generator: app, controller, model, datasource, repository, relation, service, interceptor, observer, and openapi."
+---
+
+Each `lb4` generator scaffolds a specific type of artifact and writes the resulting TypeScript files into the correct directory of your project. Run any generator without arguments to go through an interactive prompt, or supply options via `--config` to automate scaffolding in CI pipelines.
+
+All generators accept these common flags:
+
+| Flag | Description |
+|---|---|
+| `--name <name>` | Artifact name (skips the name prompt) |
+| `--yes` | Accept all defaults, skip confirmation prompts |
+| `--config '<json>'` | Supply all options as a JSON string |
+| `--format` | Run Prettier on generated files |
+| `--skip-install` | Do not run `npm install` after generating |
+
+---
+
+## lb4 app
+
+Scaffolds a complete LoopBack 4 application project with `package.json`, `tsconfig.json`, linting config, a boot sequence, and a REST server.
+
+```bash
+lb4 app
+```
+
+<Accordion title="Options">
+
+| Option | Type | Description |
+|---|---|---|
+| `--name` | string | npm package name for the project |
+| `--description` | string | Package description |
+| `--applicationName` | string | Application class name (defaults to PascalCase of project name + `Application`) |
+| `--docker` | boolean | Include a `Dockerfile` and `.dockerignore` |
+| `--repositories` | boolean | Include `RepositoryMixin` and repository imports |
+| `--services` | boolean | Include `ServiceMixin` and service-proxy imports |
+| `--eslint` | boolean | Include ESLint configuration |
+| `--prettier` | boolean | Include Prettier configuration |
+| `--mocha` | boolean | Include Mocha test setup |
+| `--loopbackBuild` | boolean | Use `@loopback/build` scripts |
+| `--vscode` | boolean | Include VS Code settings |
+
+</Accordion>
+
+Example using `--config`:
+
+```bash
+lb4 app --config '{"name":"my-api","description":"My LoopBack 4 API","docker":true}'
+```
+
+---
+
+## lb4 extension
+
+Scaffolds a LoopBack 4 extension package — a shareable component that can be mounted into any LoopBack 4 application.
+
+```bash
+lb4 extension
+```
+
+<Accordion title="Options">
+
+| Option | Type | Description |
+|---|---|---|
+| `--name` | string | npm package name for the extension |
+| `--description` | string | Package description |
+| `--componentName` | string | Component class name |
+| `--eslint` | boolean | Include ESLint configuration |
+| `--prettier` | boolean | Include Prettier configuration |
+
+</Accordion>
+
+---
+
+## lb4 controller
+
+Generates a controller class in `src/controllers/`. You choose between an empty controller stub or a full REST CRUD controller pre-wired to a model and repository.
+
+```bash
+lb4 controller
+```
+
+<Accordion title="Options">
+
+| Option | Type | Description |
+|---|---|---|
+| `--name` | string | Controller name (PascalCase, without the `Controller` suffix) |
+| `--controllerType` | string | `BASIC` for an empty controller, or `REST` for a REST controller with CRUD functions |
+
+When you choose `REST`, the generator also prompts for:
+
+| Prompt | Description |
+|---|---|
+| Model class | The model this controller operates on |
+| Repository class | The repository bound to the model |
+| ID type | The type of the model's ID property (e.g. `number`, `string`) |
+| Base path | The REST route prefix (defaults to kebab-case model name) |
+
+</Accordion>
+
+<Tabs>
+  <Tab title="Empty controller">
+    ```bash
+    lb4 controller --name Greeter --controllerType BASIC
+    ```
+    Generates `src/controllers/greeter.controller.ts` with an empty class.
+  </Tab>
+  <Tab title="REST CRUD controller">
+    ```bash
+    lb4 controller --name Todo --controllerType REST
+    ```
+    Generates `src/controllers/todo.controller.ts` with `find`, `findById`, `create`, `updateById`, `replaceById`, and `deleteById` endpoints.
+  </Tab>
+</Tabs>
+
+---
+
+## lb4 model
+
+Generates a model class in `src/models/` with typed properties decorated with `@model` and `@property`.
+
+```bash
+lb4 model
+```
+
+<Accordion title="Options and prompts">
+
+| Prompt | Description |
+|---|---|
+| Model name | Class name in PascalCase |
+| Base class | `Entity` (persisted, requires an ID) or `Model` (business domain object) |
+| Strict mode | Whether to allow additional properties at runtime |
+| Property name | Repeat this prompt until you leave it blank |
+| Property type | One of: `string`, `number`, `boolean`, `object`, `array`, `date`, `buffer`, `geopoint`, `any` |
+| Is ID? | Mark one property as the entity's identifier |
+| Is required? | Whether the property is required |
+| Default value | Optional default value for the property |
+
+</Accordion>
+
+Example generating a `Todo` entity non-interactively:
+
+```bash
+lb4 model --config '{"name":"Todo","base":"Entity","properties":{"title":{"type":"string","required":true},"isComplete":{"type":"boolean","default":false}}}'
+```
+
+---
+
+## lb4 datasource
+
+Generates a datasource class and JSON configuration in `src/datasources/`. The generator installs the selected connector package automatically.
+
+```bash
+lb4 datasource
+```
+
+<Accordion title="Options and prompts">
+
+| Prompt | Description |
+|---|---|
+| Datasource name | Used as the class name prefix and config file name |
+| Connector | Select from the list of StrongLoop-supported and community connectors, or choose `other` to specify a custom connector |
+| Connector options | Connector-specific prompts (host, port, database, username, password, etc.) |
+
+Commonly used connectors include `loopback-connector-mongodb`, `loopback-connector-postgresql`, `loopback-connector-mysql`, and `loopback-connector-rest`.
+
+</Accordion>
+
+---
+
+## lb4 repository
+
+Generates a repository class in `src/repositories/` that binds a model to a datasource.
+
+```bash
+lb4 repository
+```
+
+<Accordion title="Options and prompts">
+
+| Prompt | Description |
+|---|---|
+| Repository name | Class name prefix (defaults to model name) |
+| Model class | The model to back with this repository |
+| Datasource | The datasource to use for persistence |
+
+</Accordion>
+
+---
+
+## lb4 relation
+
+Generates the relation decorators, foreign-key properties, and navigation properties across two existing model and repository pairs.
+
+```bash
+lb4 relation
+```
+
+<Accordion title="Supported relation types">
+
+| Type | CLI selection | Description |
+|---|---|---|
+| `HasMany` | `HasMany` | Source model has many instances of target model |
+| `BelongsTo` | `BelongsTo` | Source model belongs to one instance of target model |
+| `HasOne` | `HasOne` | Source model has exactly one instance of target model |
+| `HasManyThrough` | `HasManyThrough` | Many-to-many via a join model |
+| `ReferencesMany` | `ReferencesMany` | Source model embeds an array of target IDs |
+
+</Accordion>
+
+<Accordion title="Options and prompts">
+
+| Prompt | Description |
+|---|---|
+| Relation type | One of the types listed above |
+| Source model | The model on the "owning" side |
+| Target model | The model on the "owned" side |
+| Source repository | Repository for the source model |
+| Target repository | Repository for the target model |
+| Foreign key name | Column name on the target (or join) model |
+| Relation name | Property name added to the source model |
+| Register inclusion resolver | Whether to auto-include related models in queries |
+
+</Accordion>
+
+---
+
+## lb4 service
+
+Generates a service in `src/services/`. Services can be local class implementations, local provider classes, or remote REST/SOAP service proxies.
+
+```bash
+lb4 service
+```
+
+<Accordion title="Service types">
+
+| Type | `--type` value | Description |
+|---|---|---|
+| Local class | `class` | A plain TypeScript class bound as a service |
+| Local provider | `provider` | A provider class that implements `Provider<T>` |
+| Remote proxy | `proxy` | A service proxy connected to an existing datasource |
+
+</Accordion>
+
+<Accordion title="Options">
+
+| Option | Type | Description |
+|---|---|---|
+| `--name` | string | Service name |
+| `--type` | string | `proxy`, `class`, or `provider` |
+| `--datasource` | string | Datasource name (required for `proxy` type) |
+
+</Accordion>
+
+---
+
+## lb4 interceptor
+
+Generates an interceptor in `src/interceptors/`. Interceptors wrap method invocations and can be applied globally (to all controllers) or locally (to specific controllers or methods).
+
+```bash
+lb4 interceptor
+```
+
+<Accordion title="Options">
+
+| Option | Type | Description |
+|---|---|---|
+| `--name` | string | Interceptor name |
+| `--global` | boolean | Register as a global interceptor |
+| `--group` | string | Ordering group name for global interceptors |
+
+</Accordion>
+
+<Tabs>
+  <Tab title="Global interceptor">
+    ```bash
+    lb4 interceptor --name log --global --group log
+    ```
+    Generates `src/interceptors/log.interceptor.ts` and registers it in the global interceptor chain under the `log` group.
+  </Tab>
+  <Tab title="Local interceptor">
+    ```bash
+    lb4 interceptor --name cache
+    ```
+    Generates `src/interceptors/cache.interceptor.ts` for use with `@intercept(CacheInterceptor)` on specific controllers or methods.
+  </Tab>
+</Tabs>
+
+---
+
+## lb4 observer
+
+Generates a lifecycle observer in `src/observers/`. Observers implement `start()` and `stop()` hooks that fire when the application starts and stops.
+
+```bash
+lb4 observer
+```
+
+<Accordion title="Options">
+
+| Option | Type | Description |
+|---|---|---|
+| `--name` | string | Observer name |
+| `--group` | string | Observer group name for controlling execution order |
+
+</Accordion>
+
+---
+
+## lb4 openapi
+
+Generates LoopBack 4 controllers, models, and (optionally) a service datasource from an OpenAPI 3.x or Swagger 2.x specification file or URL.
+
+```bash
+lb4 openapi <url-or-file-path>
+```
+
+```bash
+# From a URL
+lb4 openapi https://petstore3.swagger.io/api/v3/openapi.json
+
+# From a local file
+lb4 openapi ./specs/my-api.yaml
+```
+
+<Accordion title="Options">
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--url` | string | | URL or file path of the OpenAPI spec |
+| `--validate` | boolean | `false` | Validate the spec before generating |
+| `--server` | boolean | `true` | Generate server-side controllers |
+| `--client` | boolean | `false` | Generate client-side service proxies |
+| `--positional` | boolean | | Use positional arguments in generated methods |
+
+</Accordion>
+
+<Note>
+The generator creates one controller file per OpenAPI tag. Review and adjust the generated code — especially authentication guards and error handling — before deploying to production.
+</Note>
+
+---
+
+## lb4 import-lb3-models
+
+Reads LoopBack 3 model JSON definitions from an existing LB3 application and generates equivalent LoopBack 4 `Entity` model classes.
+
+```bash
+lb4 import-lb3-models <path-to-lb3-app>
+```
+
+The path argument can point to a project directory (e.g. `../my-lb3-app`) or directly to the server file (e.g. `../my-lb3-app/server/server.js`).
+
+<Accordion title="Options">
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--outDir` | string | `src/models` | Directory to write the generated model files |
+
+</Accordion>
+
+<Warning>
+This generator is experimental. Not all LoopBack 3 model features (e.g. remote methods, hooks, ACLs) are migrated automatically. Review the generated models before using them in production.
+</Warning>

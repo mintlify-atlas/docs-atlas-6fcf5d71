@@ -1,0 +1,183 @@
+---
+title: 'Getting Started with LoopBack 4: Build Your First API'
+description: 'Step-by-step guide to installing LoopBack 4, scaffolding a project with the CLI, adding a controller, and exploring the auto-generated API.'
+keywords: ['loopback 4 getting started', 'lb4 app', 'loopback cli', 'node.js rest api tutorial', 'loopback controller']
+---
+
+This guide walks you through creating a working LoopBack 4 REST API from scratch. By the end you will have a running server with a `/hello` endpoint and an interactive API Explorer to test it. The whole process takes about five minutes.
+
+## Prerequisites
+
+You need Node.js 20 (Maintenance LTS) or 22 (Active LTS) installed. If you are not sure which version you have, run:
+
+```bash
+node --version
+```
+
+Download Node.js from [nodejs.org](https://nodejs.org/en/download/) if needed.
+
+## Steps
+
+<Steps>
+  <Step title="Install the LoopBack 4 CLI">
+    The CLI scaffolds projects and artifacts—controllers, models, repositories—and ensures they follow LoopBack conventions. Install it globally so the `lb4` command is available anywhere on your machine.
+
+    <CodeGroup>
+      ```bash npm
+      npm install -g @loopback/cli
+      ```
+      ```bash npx (no install)
+      npx -p @loopback/cli lb4 app
+      ```
+    </CodeGroup>
+
+    <Tip>
+      You can also scaffold a new project without installing the CLI globally by running `npm create loopback`.
+    </Tip>
+
+    Verify the installation:
+
+    ```bash
+    lb4 --version
+    ```
+  </Step>
+
+  <Step title="Scaffold a new project">
+    Run the application generator and answer the prompts. The CLI creates a project directory, configures TypeScript, and installs all dependencies.
+
+    ```bash
+    lb4 app
+    ```
+
+    Answer the prompts as follows:
+
+    ```
+    ? Project name: getting-started
+    ? Project description: Getting started tutorial
+    ? Project root directory: getting-started
+    ? Application class name: StarterApplication
+    ? Select features to enable in the project:
+    ❯◉ Enable eslint: add a linter with pre-configured lint rules
+     ◉ Enable prettier: install prettier to format code conforming to rules
+     ◉ Enable mocha: install mocha to run tests
+     ◉ Enable loopbackBuild: use @loopback/build helpers (e.g. lb-eslint)
+     ◉ Enable editorconfig: add EditorConfig files
+     ◉ Enable vscode: add VSCode config files
+     ◉ Enable docker: include Dockerfile and .dockerignore
+     ◉ Enable repositories: include repository imports and RepositoryMixin
+     ◉ Enable services: include service-proxy imports and ServiceMixin
+    ```
+
+    The generator creates a `getting-started/` directory containing a fully configured TypeScript project.
+  </Step>
+
+  <Step title="Start the application">
+    The generated project includes a built-in `/ping` route you can use to verify the server is running.
+
+    ```bash
+    cd getting-started
+    npm start
+    ```
+
+    Open your browser at [http://127.0.0.1:3000/ping](http://127.0.0.1:3000/ping). You should see a JSON response with a timestamp and uptime.
+
+    <Note>
+      The API Explorer is available at [http://127.0.0.1:3000/explorer](http://127.0.0.1:3000/explorer). It is generated automatically from your controllers' OpenAPI metadata.
+    </Note>
+  </Step>
+
+  <Step title="Add your first controller">
+    Stop the running server with `Ctrl+C`, then use the controller generator:
+
+    ```bash
+    lb4 controller
+    ```
+
+    Answer the prompts:
+
+    ```
+    ? Controller class name: hello
+    ? What kind of controller would you like to generate? Empty Controller
+      create src/controllers/hello.controller.ts
+      update src/controllers/index.ts
+
+    Controller hello was now created in src/controllers/
+    ```
+
+    The generator creates `src/controllers/hello.controller.ts` and registers it in the barrel export `src/controllers/index.ts`.
+  </Step>
+
+  <Step title="Implement the hello endpoint">
+    Open `src/controllers/hello.controller.ts` and replace its contents with:
+
+    ```typescript
+    import {get} from '@loopback/rest';
+
+    export class HelloController {
+      @get('/hello')
+      hello(): string {
+        return 'Hello world!';
+      }
+    }
+    ```
+
+    The `@get('/hello')` decorator does two things at once: it registers the route with the REST server and adds the corresponding path to the OpenAPI specification. No separate routing config is needed.
+  </Step>
+
+  <Step title="Restart and test">
+    Start the application again:
+
+    ```bash
+    npm start
+    ```
+
+    Visit [http://127.0.0.1:3000/hello](http://127.0.0.1:3000/hello) to see `Hello world!`.
+
+    You can also test it from the API Explorer at [http://127.0.0.1:3000/explorer](http://127.0.0.1:3000/explorer). The `/hello` endpoint appears automatically because LoopBack generated the OpenAPI spec from the `@get` decorator.
+  </Step>
+</Steps>
+
+## What the generated application looks like
+
+The hello-world example in the repository uses `RestApplication` directly and configures a handler inline rather than via a controller. This shows the lower-level API:
+
+```typescript
+import {ApplicationConfig} from '@loopback/core';
+import {RestApplication, RestServer} from '@loopback/rest';
+export {ApplicationConfig};
+
+export class HelloWorldApplication extends RestApplication {
+  constructor(options: ApplicationConfig = {}) {
+    super(options);
+
+    // Configure a sequence handler that always returns Hello World!
+    this.handler(({response}, sequence) => {
+      sequence.send(response, 'Hello World!');
+    });
+  }
+
+  async start() {
+    await super.start();
+
+    if (!this.options?.disableConsoleLog) {
+      const rest = await this.getServer(RestServer);
+      console.log(
+        `REST server running on port: ${await rest.get('rest.port')}`,
+      );
+    }
+  }
+}
+```
+
+For real applications the controller approach (shown in the steps above) is preferred because it gives you automatic OpenAPI generation and input validation.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Core concepts" icon="book-open" href="/core-concepts">
+    Learn how Application, Controller, Model, Repository, and Context fit together.
+  </Card>
+  <Card title="Introduction" icon="info" href="/introduction">
+    Understand the architecture and design philosophy behind LoopBack 4.
+  </Card>
+</CardGroup>

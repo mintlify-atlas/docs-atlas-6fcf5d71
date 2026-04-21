@@ -1,0 +1,282 @@
+---
+title: 'Repositories: Data Access Layer in LoopBack 4'
+description: 'Use DefaultCrudRepository to perform CRUD operations, apply filters, run transactions, and build custom data access methods in LoopBack 4.'
+keywords: ['loopback 4', 'repository', 'crud', 'defaultcrudrepository', 'filter', 'transaction']
+---
+
+A repository is a type-safe abstraction over a DataSource that provides data access operations for a specific model. Where a model describes _what_ data looks like, a repository defines _how_ to read and write it. LoopBack ships `DefaultCrudRepository`, which wires a model class to a DataSource and implements the full CRUD interface—so you get `create`, `find`, `findById`, `updateById`, `replaceById`, `deleteById`, and `count` without writing any SQL or query code yourself.
+
+## DefaultCrudRepository
+
+Extend `DefaultCrudRepository` with three type parameters: the model class, the type of its `id` property, and an optional relations type:
+
+```typescript
+import {DefaultCrudRepository} from '@loopback/repository';
+import {inject} from '@loopback/core';
+import {DbDataSource} from '../datasources';
+import {Todo, TodoRelations} from '../models';
+
+export class TodoRepository extends DefaultCrudRepository<
+  Todo,
+  typeof Todo.prototype.id,
+  TodoRelations
+> {
+  constructor(@inject('datasources.db') dataSource: DbDataSource) {
+    super(Todo, dataSource);
+  }
+}
+```
+
+This is the actual repository from `examples/todo/src/repositories/todo.repository.ts`. The `@inject('datasources.db')` decorator resolves the named DataSource from LoopBack's IoC container at startup.
+
+## CRUD method reference
+
+<AccordionGroup>
+  <Accordion title="create(dataObject)">
+    Creates a new record and returns the persisted instance, including any auto-generated fields like `id`.
+
+    ```typescript
+    const todo = await todoRepo.create({title: 'Buy groceries'});
+    // todo.id is now set
+    ```
+  </Accordion>
+  <Accordion title="find(filter?)">
+    Returns an array of records matching the optional filter. Without a filter, returns all records.
+
+    ```typescript
+    const todos = await todoRepo.find({
+      where: {isComplete: false},
+      order: ['title ASC'],
+      limit: 10,
+    });
+    ```
+  </Accordion>
+  <Accordion title="findById(id, filter?)">
+    Returns a single record by primary key. Throws `EntityNotFoundError` if no record exists for that `id`.
+
+    ```typescript
+    const todo = await todoRepo.findById(42);
+    ```
+  </Accordion>
+  <Accordion title="updateById(id, data)">
+    Applies a partial update (PATCH semantics) to the record with the given `id`. Only the supplied properties are changed.
+
+    ```typescript
+    await todoRepo.updateById(42, {isComplete: true});
+    ```
+  </Accordion>
+  <Accordion title="replaceById(id, data)">
+    Replaces all properties of the record with the given `id` (PUT semantics). Properties not supplied in `data` are reset to their defaults.
+
+    ```typescript
+    await todoRepo.replaceById(42, {title: 'Updated title', isComplete: false});
+    ```
+  </Accordion>
+  <Accordion title="deleteById(id)">
+    Deletes the record with the given `id`. Throws if the record does not exist.
+
+    ```typescript
+    await todoRepo.deleteById(42);
+    ```
+  </Accordion>
+  <Accordion title="count(where?)">
+    Returns the number of records matching the optional `where` clause.
+
+    ```typescript
+    const {count} = await todoRepo.count({isComplete: false});
+    ```
+  </Accordion>
+  <Accordion title="updateAll(data, where?)">
+    Applies a partial update to all records matching the `where` clause. Returns a `Count` object.
+
+    ```typescript
+    await todoRepo.updateAll({isComplete: true}, {isComplete: false});
+    ```
+  </Accordion>
+  <Accordion title="deleteAll(where?)">
+    Deletes all records matching the `where` clause. Omit `where` to delete everything.
+
+    ```typescript
+    await todoRepo.deleteAll({isComplete: true});
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Filters
+
+Most `find*` methods accept a filter object that narrows or shapes results. All filter types can be combined in a single object.
+
+<AccordionGroup>
+  <Accordion title="where">
+    Match records by field values, similar to a SQL `WHERE` clause.
+
+    ```typescript
+    // Simple equality
+    await todoRepo.find({where: {isComplete: false}});
+
+    // Comparison operators
+    await todoRepo.find({where: {id: {gt: 10}}});
+
+    // AND / OR
+    await todoRepo.find({
+      where: {
+        and: [{isComplete: false}, {title: {like: '%urgent%'}}],
+      },
+    });
+    ```
+  </Accordion>
+  <Accordion title="fields">
+    Include or exclude specific properties from the returned objects.
+
+    ```typescript
+    // Return only id and title
+    await todoRepo.find({fields: {id: true, title: true}});
+
+    // Return everything except desc
+    await todoRepo.find({fields: {desc: false}});
+    ```
+  </Accordion>
+  <Accordion title="include">
+    Eager-load related models. Requires inclusion resolvers to be registered on the repository.
+
+    ```typescript
+    await todoListRepo.find({include: ['todos']});
+    ```
+  </Accordion>
+  <Accordion title="order">
+    Sort results by one or more properties.
+
+    ```typescript
+    await todoRepo.find({order: ['title ASC', 'id DESC']});
+    ```
+  </Accordion>
+  <Accordion title="limit and skip">
+    Paginate results.
+
+    ```typescript
+    // Page 2 of 10 items per page
+    await todoRepo.find({limit: 10, skip: 10});
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### FilterBuilder
+
+You can also construct filters programmatically using `FilterBuilder`:
+
+```typescript
+import {FilterBuilder} from '@loopback/repository';
+
+const filter = new FilterBuilder<Todo>()
+  .where({isComplete: false})
+  .limit(10)
+  .order(['title ASC'])
+  .build();
+
+const todos = await todoRepo.find(filter);
+```
+
+## Transactions
+
+Repositories backed by connectors that support transactions (such as PostgreSQL and MySQL) implement `TransactionalRepository`. Call `beginTransaction()` to get a `Transaction` object, then pass it as an option to repository methods:
+
+```typescript
+import {IsolationLevel} from '@loopback/repository';
+
+const tx = await todoRepo.beginTransaction(IsolationLevel.READ_COMMITTED);
+try {
+  await todoRepo.create({title: 'First task'}, {transaction: tx});
+  await todoRepo.create({title: 'Second task'}, {transaction: tx});
+  await tx.commit();
+} catch (err) {
+  await tx.rollback();
+  throw err;
+}
+```
+
+<Warning>
+Not all connectors support transactions. The in-memory connector does not. Check your connector's documentation to confirm transaction support.
+</Warning>
+
+## Custom repository methods
+
+Add domain-specific query methods directly to your repository class:
+
+```typescript
+export class TodoListRepository extends DefaultCrudRepository<
+  TodoList,
+  typeof TodoList.prototype.id,
+  TodoListRelations
+> {
+  constructor(@inject('datasources.db') dataSource: DbDataSource) {
+    super(TodoList, dataSource);
+  }
+
+  public findByTitle(title: string) {
+    return this.findOne({where: {title}});
+  }
+}
+```
+
+This pattern is taken from `examples/todo-list/src/repositories/todo-list.repository.ts`. Custom methods use the same filter API as the base class and are fully type-safe.
+
+## Generating repositories with the CLI
+
+<Steps>
+  <Step title="Run the repository generator">
+    ```bash
+    lb4 repository
+    ```
+  </Step>
+  <Step title="Select a DataSource">
+    Choose the DataSource that this repository will connect to.
+  </Step>
+  <Step title="Select a model">
+    Choose the model class the repository will manage.
+  </Step>
+  <Step title="Review the output">
+    The CLI writes the repository class to `src/repositories/` and exports it from `src/repositories/index.ts`.
+  </Step>
+</Steps>
+
+## Using a repository in a controller
+
+Inject the repository into your controller using the `@repository` decorator:
+
+```typescript
+import {repository} from '@loopback/repository';
+import {get, param} from '@loopback/rest';
+import {TodoRepository} from '../repositories';
+import {Todo} from '../models';
+
+export class TodoController {
+  constructor(
+    @repository(TodoRepository)
+    public todoRepository: TodoRepository,
+  ) {}
+
+  @get('/todos/{id}')
+  async findById(@param.path.number('id') id: number): Promise<Todo> {
+    return this.todoRepository.findById(id);
+  }
+}
+```
+
+## Repository mixin
+
+`RepositoryMixin` adds convenience methods to your `Application` class for registering repositories and automatically binding them in the IoC container:
+
+```typescript
+import {Application} from '@loopback/core';
+import {RepositoryMixin} from '@loopback/repository';
+
+class MyApplication extends RepositoryMixin(Application) {}
+
+const app = new MyApplication();
+app.repository(TodoRepository);
+// TodoRepository is now bound at 'repositories.TodoRepository'
+```
+
+<Tip>
+Most LoopBack applications use `RestApplication`, which already includes `RepositoryMixin`. You typically call `app.repository()` in your `application.ts` constructor or rely on the `@loopback/boot` auto-discovery.
+</Tip>

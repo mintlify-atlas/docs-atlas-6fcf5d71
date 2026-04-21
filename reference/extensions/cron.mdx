@@ -1,0 +1,213 @@
+---
+title: "Cron Job Scheduling Extension for LoopBack 4"
+description: "Schedule recurring jobs in LoopBack 4 with @loopback/cron. Covers CronComponent, the @cronJob decorator, six-field cron syntax, and error handling."
+---
+
+The `@loopback/cron` extension integrates the [`node-cron`](https://github.com/kelektiv/node-cron) library with LoopBack 4's IoC container so you can define, bind, and manage scheduled background jobs using standard cron expressions. Jobs are started and stopped automatically with the application lifecycle.
+
+<Warning>
+This package is **experimental** (`0.x.y`). APIs may change between releases.
+</Warning>
+
+## Installation
+
+```bash
+npm install @loopback/cron
+```
+
+## What the package provides
+
+| Export | Description |
+|---|---|
+| `CronComponent` | Registers the scheduler and manages job lifecycle |
+| `CronJob` | Extended `CronJob` class with improved error handling |
+| `cronJob()` | Decorator to mark a class as a cron job for auto-discovery |
+| `asCronJob` | Binding spec used to tag a binding as a cron job extension |
+| `CronJobConfig` | Type for the job configuration object |
+| `CronBindings` | Binding keys: `COMPONENT`, `CRON_JOB_NAMESPACE` |
+
+## Setting up the component
+
+<Steps>
+
+### Register `CronComponent`
+
+Import and mount the component in your application constructor:
+
+```typescript
+import {CronComponent} from '@loopback/cron';
+
+// In your Application constructor:
+this.component(CronComponent);
+```
+
+### Create a cron job class
+
+Use the `@cronJob()` decorator and extend `CronJob`. The decorator marks the class so the container can discover and manage it.
+
+```typescript
+import {CronJob, cronJob} from '@loopback/cron';
+
+@cronJob()
+class MyCronJob extends CronJob {
+  constructor() {
+    super({
+      name: 'my-job',
+      cronTime: '*/1 * * * * *', // Every second
+      onTick: () => {
+        console.log('Job ran at', new Date());
+      },
+      start: false,
+    });
+  }
+}
+```
+
+### Register the job with the application context
+
+```typescript
+import {createBindingFromClass} from '@loopback/core';
+
+const jobBinding = createBindingFromClass(MyCronJob);
+app.add(jobBinding);
+```
+
+`CronComponent` discovers all bindings tagged with the cron job tag and starts/stops them with the application.
+
+</Steps>
+
+## Cron expression syntax
+
+Cron expressions in `node-cron` support a **6-field** format (seconds are included):
+
+```
+*    *    *    *    *    *
+┬    ┬    ┬    ┬    ┬    ┬
+│    │    │    │    │    └── Day of week (0–7, Sunday = 0 or 7)
+│    │    │    │    └─────── Month (1–12)
+│    │    │    └──────────── Day of month (1–31)
+│    │    └───────────────── Hour (0–23)
+│    └────────────────────── Minute (0–59)
+└─────────────────────────── Second (0–59)
+```
+
+Common patterns:
+
+| Expression | Meaning |
+|---|---|
+| `*/1 * * * * *` | Every second |
+| `0 */5 * * * *` | Every 5 minutes |
+| `0 0 * * * *` | Every hour |
+| `0 0 9 * * 1-5` | Weekdays at 09:00 |
+| `0 30 18 * * 5` | Fridays at 18:30 |
+
+## Alternative registration patterns
+
+<Tabs>
+  <Tab title="Extend CronJob">
+    ```typescript
+    import {CronJob, cronJob} from '@loopback/cron';
+    import {createBindingFromClass} from '@loopback/core';
+
+    @cronJob()
+    class MyCronJob extends CronJob {
+      constructor() {
+        super({
+          name: 'job-B',
+          onTick: () => {
+            // do the work
+          },
+          cronTime: '0 * * * * *', // Every minute
+          start: false,
+        });
+      }
+    }
+
+    const jobBinding = createBindingFromClass(MyCronJob);
+    app.add(jobBinding);
+    ```
+  </Tab>
+  <Tab title="Provider class">
+    Use a provider to inject configuration from the context:
+
+    ```typescript
+    import {CronJob, cronJob, CronJobConfig} from '@loopback/cron';
+    import {config, Provider, createBindingFromClass} from '@loopback/core';
+
+    @cronJob()
+    class CronJobProvider implements Provider<CronJob> {
+      constructor(@config() private jobConfig: CronJobConfig = {}) {}
+
+      value() {
+        return new CronJob({
+          cronTime: '*/1 * * * * *',
+          start: false,
+          ...this.jobConfig,
+        });
+      }
+    }
+
+    const jobBinding = createBindingFromClass(CronJobProvider);
+    app.add(jobBinding);
+
+    // Supply per-binding configuration:
+    const jobConfig: CronJobConfig = {
+      name: 'job-B',
+      cronTime: '0 0 * * * *',
+      start: false,
+    };
+    app.configure(jobBinding.key).to(jobConfig);
+    ```
+  </Tab>
+  <Tab title="Direct binding">
+    Create a `CronJob` instance and bind it manually using `asCronJob`:
+
+    ```typescript
+    import {CronJob, asCronJob} from '@loopback/cron';
+
+    const job = new CronJob({
+      cronTime: '*/1 * * * * *',
+      onTick: () => {
+        // Do the work
+      },
+      start: true,
+    });
+
+    // Bind the job as an extension for the scheduler
+    app.bind('cron.jobs.job1').to(job).apply(asCronJob);
+    ```
+  </Tab>
+</Tabs>
+
+## Starting and stopping jobs manually
+
+By default, `CronComponent` starts all registered jobs when the application starts. To start non-running jobs after the application has already started:
+
+```typescript
+import {CronBindings} from '@loopback/cron';
+
+const component = await app.get(CronBindings.COMPONENT);
+await component.start();
+```
+
+## Error handling
+
+`@loopback/cron`'s `CronJob` extends the base `cron` class to make error handling explicit. Attach an error handler to catch errors thrown from `onTick`:
+
+```typescript
+job.onError(err => {
+  console.error('Cron job error:', err);
+  // alert, retry, or gracefully degrade here
+});
+```
+
+<Tip>
+Always attach an `onError` handler in production. An unhandled error inside `onTick` is swallowed by the base `cron` library unless you handle it explicitly.
+</Tip>
+
+## CronBindings reference
+
+| Key | Value | Description |
+|---|---|---|
+| `CronBindings.COMPONENT` | `components.CronComponent` | Retrieves the `CronComponent` instance |
+| `CronBindings.CRON_JOB_NAMESPACE` | `cron.jobs` | Namespace prefix for all job bindings |

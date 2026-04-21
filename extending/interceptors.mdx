@@ -1,0 +1,317 @@
+---
+title: 'LoopBack 4 Interceptors: Cross-cutting Method Logic'
+description: 'Add logging, caching, validation, and error handling around any controller method using LoopBack 4 interceptors — global or targeted with @intercept.'
+keywords: ['loopback', 'interceptor', 'intercept', 'middleware', 'logging', 'caching', 'InvocationContext']
+---
+
+Interceptors are reusable functions that wrap method invocations to implement cross-cutting concerns such as logging, caching, input validation, output transformation, and error normalization. Rather than duplicating this logic inside each controller method, you define an interceptor once and attach it wherever you need it — to a specific method, an entire class, or every method in the application. Interceptors are executed in a chain: each one receives a `next()` function it can call to pass control downstream, giving it the chance to run logic both before and after the real method executes.
+
+## How interceptors work
+
+When LoopBack invokes a controller method, it first collects all applicable interceptors from three sources (in reverse-priority order):
+
+1. **Global interceptors** — registered on the application, applied to every invocation.
+2. **Class-level interceptors** — applied to all methods on a specific controller class.
+3. **Method-level interceptors** — applied to one specific method.
+
+Global interceptors run first, then class-level, then method-level. Duplicate entries are removed; the first occurrence wins.
+
+The interceptor function signature is:
+
+```typescript
+// From packages/context/src/interceptor-chain.ts
+export type GenericInterceptor<C extends Context = Context> = (
+  context: C,
+  next: Next,
+) => ValueOrPromise<NonVoid>;
+```
+
+For method invocations the context type is `InvocationContext`.
+
+## The Interceptor interface
+
+```typescript
+// From packages/context/src/interceptor.ts
+export interface Interceptor extends GenericInterceptor<InvocationContext> {}
+```
+
+An interceptor is a function (or a `Provider` class that returns a function) matching this interface. You can write it as a plain function:
+
+```typescript
+const log: Interceptor = async (invocationCtx, next) => {
+  console.log('log: before-' + invocationCtx.methodName);
+  const result = await next();
+  console.log('log: after-' + invocationCtx.methodName);
+  return result;
+};
+```
+
+Or as a provider class (which enables dependency injection inside the interceptor):
+
+```typescript
+import {Provider, inject} from '@loopback/core';
+
+class NameValidator implements Provider<Interceptor> {
+  constructor(
+    @inject('valid-names')
+    private validNames: string[],
+  ) {}
+
+  value() {
+    return this.intercept.bind(this);
+  }
+
+  async intercept<T>(
+    invocationCtx: InvocationContext,
+    next: () => ValueOrPromise<T>,
+  ) {
+    const name = invocationCtx.args[0];
+    if (!this.validNames.includes(name)) {
+      throw new Error(`Name '${name}' is not on the list of '${this.validNames}'`);
+    }
+    return next();
+  }
+}
+```
+
+## InvocationContext
+
+`InvocationContext` extends `Context` and exposes metadata about the current call:
+
+```typescript
+// From packages/context/src/interceptor.ts (InvocationContext shape)
+export class InvocationContext extends Context {
+  constructor(
+    parent: Context,
+    public readonly target: object,       // class (static) or prototype (instance)
+    public readonly methodName: string,   // name of the method being called
+    public readonly args: InvocationArgs, // any[] — mutable, changes propagate downstream
+    public readonly source?: InvocationSource, // who triggered the invocation
+  ) {}
+}
+```
+
+You can mutate `invocationCtx.args` to transform inputs before the real method sees them:
+
+```typescript
+const convertName: Interceptor = async (invocationCtx, next) => {
+  invocationCtx.args[0] = (invocationCtx.args[0] as string).toUpperCase();
+  return next();
+};
+```
+
+### InvocationSource
+
+The `source` property tells you what triggered the invocation — a REST route, an injected proxy, or an explicit `invokeMethod` call. Global interceptors can use this to opt out of irrelevant call sites:
+
+```typescript
+ctx
+  .bind('globalInterceptors.authInterceptor')
+  .to(authInterceptor)
+  .apply(asGlobalInterceptor('auth'))
+  .tag({[ContextTags.GLOBAL_INTERCEPTOR_SOURCE]: 'route'});
+```
+
+## The @intercept decorator
+
+`@intercept` accepts one or more interceptor functions **or** binding keys as arguments. It can be applied to a class or to individual methods.
+
+```typescript
+import {intercept} from '@loopback/core';
+
+@intercept(log)                // class-level: applies to all methods
+export class OrderController {
+
+  @intercept('caching-interceptor')  // method-level: binding key resolved at runtime
+  async listOrders(userId: string) {
+    // ...
+  }
+
+  @intercept(convertName, log) // multiple interceptors on one method
+  async createOrder(name: string) {
+    // ...
+  }
+}
+```
+
+<Note>
+`@intercept` stores metadata; it does **not** wrap the method. Invoking the method directly (without going through LoopBack's invocation pipeline) skips all interceptors.
+</Note>
+
+### Order of invocation
+
+The interceptor list is assembled top-to-bottom, left-to-right. Duplicate entries are dropped from their first occurrence. Given:
+
+```typescript
+@intercept(log)
+class MyController {
+  @intercept(convertName, log)
+  async greet(name: string) { /* ... */ }
+}
+```
+
+The effective chain for `greet` is: **[`convertName`, `log`]** — because `log` appears at method level and de-duplicates the class-level entry.
+
+## Global interceptors
+
+Register a global interceptor using `app.interceptor()`. Every method invocation in the application will pass through it.
+
+```typescript
+import {asGlobalInterceptor} from '@loopback/core';
+
+// Using the helper method
+app.interceptor(MetricsInterceptorProvider, {
+  global: true,
+  group: 'metrics',
+});
+
+// Or manually via context binding
+app
+  .bind('globalInterceptors.MetricsInterceptor')
+  .toProvider(MetricsInterceptorProvider)
+  .apply(asGlobalInterceptor('metrics'));
+```
+
+Use the `group` option to control execution order across multiple global interceptors:
+
+```typescript
+app.bind(ContextBindings.GLOBAL_INTERCEPTOR_ORDERED_GROUPS).to(['log', 'auth', 'metrics']);
+```
+
+If `GLOBAL_INTERCEPTOR_ORDERED_GROUPS` is not set, groups are sorted alphabetically.
+
+## Writing an interceptor class
+
+<Steps>
+  <Step title="Create the provider class">
+    Use the `@globalInterceptor` decorator (or `@injectable`) to register the interceptor in the application context automatically during boot.
+
+    ```typescript
+    import {
+      globalInterceptor,
+      Interceptor,
+      InvocationContext,
+      Provider,
+      ValueOrPromise,
+    } from '@loopback/core';
+
+    @globalInterceptor('logging', {tags: {name: 'LogInterceptor'}})
+    export class LogInterceptor implements Provider<Interceptor> {
+      value() {
+        return this.intercept.bind(this);
+      }
+
+      async intercept<T>(
+        invocationCtx: InvocationContext,
+        next: () => ValueOrPromise<T>,
+      ): Promise<T> {
+        const start = Date.now();
+        try {
+          const result = await next();
+          console.log(
+            `${invocationCtx.methodName} completed in ${Date.now() - start}ms`,
+          );
+          return result;
+        } catch (err) {
+          console.error(`${invocationCtx.methodName} failed:`, err.message);
+          throw err;
+        }
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Generate with the CLI">
+    You can scaffold an interceptor with the `lb4 interceptor` command. The generated file is placed in `src/interceptors/` and picked up automatically by the interceptor booter.
+
+    ```bash
+    lb4 interceptor
+    ? Interceptor name: log
+    ? Is it a global interceptor? Yes
+    ? Group name for ordering the global interceptor: logging
+    ```
+  </Step>
+</Steps>
+
+## Interceptor chain examples
+
+<Tabs>
+  <Tab title="Logging">
+    ```typescript
+    const log: Interceptor = async (invocationCtx, next) => {
+      console.log('log: before-' + invocationCtx.methodName);
+      const result = await next();
+      console.log('log: after-' + invocationCtx.methodName);
+      return result;
+    };
+    ```
+  </Tab>
+  <Tab title="Error handling">
+    ```typescript
+    const logError: Interceptor = async (invocationCtx, next) => {
+      try {
+        return await next();
+      } catch (err) {
+        console.error('Error in ' + invocationCtx.methodName + ':', err);
+        throw err;
+      }
+    };
+    ```
+  </Tab>
+  <Tab title="Caching">
+    ```typescript
+    // Use a binding key so the provider can receive injected dependencies
+    @intercept('caching-interceptor')
+    async listOrders(userId: string) { /* ... */ }
+
+    // Register the provider:
+    app.interceptor(CachingInterceptorProvider, {
+      global: true,
+      group: 'caching',
+      key: 'caching-interceptor',
+    });
+    ```
+  </Tab>
+  <Tab title="Input transform">
+    ```typescript
+    const convertName: Interceptor = async (invocationCtx, next) => {
+      // Uppercase the first argument before it reaches the method
+      invocationCtx.args[0] = (invocationCtx.args[0] as string).toUpperCase();
+      return next();
+    };
+    ```
+  </Tab>
+</Tabs>
+
+## Composing interceptors
+
+Combine multiple interceptors into one with `composeInterceptors`:
+
+```typescript
+import {composeInterceptors} from '@loopback/core';
+
+const combined = composeInterceptors(
+  logInterceptorFn,
+  'interceptors.my-interceptor', // binding key resolved at invocation time
+  metricsInterceptorFn,
+);
+```
+
+## Proxies and invokeMethod
+
+You can apply interceptors outside of REST routing by creating a proxy or calling `invokeMethod`:
+
+```typescript
+import {createProxyWithInterceptors, invokeMethod} from '@loopback/core';
+
+// Proxy approach — wraps every method on the instance
+const proxy = createProxyWithInterceptors(controllerInstance, ctx);
+const msg = await proxy.greet('John');
+
+// Explicit invocation
+const result = await invokeMethod(controller, 'greetWithDI', ctx);
+```
+
+<Tip>
+Synchronous methods on a proxy become `ValueOrPromise` in the proxy's type, because at least one interceptor may be async. Account for this in your type annotations.
+</Tip>

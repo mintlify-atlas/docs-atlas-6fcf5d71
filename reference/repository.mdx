@@ -1,0 +1,477 @@
+---
+title: "@loopback/repository — Models, Relations, and Data Access"
+description: "API reference for @loopback/repository: @model, @property, relation decorators, Repository interfaces, DefaultCrudRepository, Filter and Where types."
+keywords: ["loopback", "repository", "model", "entity", "CRUD", "datasource", "relations", "hasMany", "belongsTo", "filter"]
+---
+
+`@loopback/repository` provides a common set of interfaces and base classes for interacting with databases and other data sources in LoopBack 4. It introduces model decorators, typed repository interfaces, and a default `DefaultCrudRepository` implementation backed by `loopback-datasource-juggler`.
+
+```bash
+npm install @loopback/repository
+```
+
+<Note>
+`@loopback/repository` currently ships one concrete repository implementation—`DefaultCrudRepository`—which wraps the legacy juggler data source. Community packages provide native connectors for databases such as MongoDB, PostgreSQL, and others.
+</Note>
+
+## Model decorators
+
+### @model
+
+```typescript
+function model(definition?: Partial<ModelDefinitionSyntax>): ClassDecorator
+```
+
+Registers a class as a LoopBack model and builds its `ModelDefinition` from `@property` decorators and the optional `definition` argument.
+
+```typescript
+import {model, Entity} from '@loopback/repository';
+
+@model({
+  settings: {strict: true},
+})
+export class Todo extends Entity {
+  // ...
+}
+```
+
+The `ModelDefinitionSyntax` type accepts:
+
+```typescript
+interface ModelDefinitionSyntax {
+  name?: string;
+  properties?: {[name: string]: PropertyDefinition | PropertyType};
+  settings?: ModelSettings;
+  relations?: RelationDefinitionMap;
+  jsonSchema?: JsonSchemaWithExtensions;
+  [attribute: string]: any;
+}
+```
+
+### @property
+
+```typescript
+function property(definition?: Partial<PropertyDefinition>): PropertyDecorator
+```
+
+Marks a class property as part of the model definition and optionally configures metadata such as type, ID flag, and validation constraints.
+
+```typescript
+import {model, Entity, property} from '@loopback/repository';
+
+@model()
+export class Todo extends Entity {
+  @property({id: true, generated: true})
+  id: number;
+
+  @property({required: true})
+  title: string;
+
+  @property()
+  isComplete: boolean;
+}
+```
+
+Key `PropertyDefinition` fields:
+
+```typescript
+interface PropertyDefinition {
+  type: PropertyType;       // e.g. String, Number, Boolean, Date, or a model class
+  id?: boolean | number;    // marks this property as the primary key
+  generated?: boolean;      // auto-generated (e.g. database sequence)
+  required?: boolean;
+  hidden?: boolean;         // exclude from response bodies
+  jsonSchema?: JsonSchemaWithExtensions;
+  [attribute: string]: any;
+}
+```
+
+Use `@property.array` for array properties:
+
+```typescript
+@property.array(String)
+tags: string[];
+```
+
+---
+
+## Relation decorators
+
+All relation decorators accept an `EntityResolver<T>` (a function returning the target model class) as their first argument. Using a resolver avoids circular import issues.
+
+### @hasMany
+
+```typescript
+function hasMany<T extends Entity>(
+  targetResolver: EntityResolver<T>,
+  definition?: Partial<HasManyDefinition>,
+): PropertyDecorator
+```
+
+Declares a one-to-many relationship. The decorator infers the foreign key on the target model from the source model name by default.
+
+```typescript
+@model()
+export class Category extends Entity {
+  @property({id: true})
+  id: number;
+
+  @hasMany(() => Product)
+  products: Product[];
+}
+```
+
+For a many-to-many relationship via a through model, pass `through` in the definition:
+
+```typescript
+@hasMany(() => Student, {through: {model: () => Enrollment}})
+students: Student[];
+```
+
+### @belongsTo
+
+```typescript
+function belongsTo<T extends Entity>(
+  targetResolver: EntityResolver<T>,
+  definition?: Partial<BelongsToDefinition>,
+  propertyDefinition?: Partial<PropertyDefinition>,
+): PropertyDecorator
+```
+
+Declares a many-to-one relationship by decorating the foreign key property. The decorator strips a trailing `Id` suffix from the property name to derive the relation name.
+
+```typescript
+@model()
+export class Product extends Entity {
+  @property({id: true})
+  id: number;
+
+  @belongsTo(() => Category)
+  categoryId: number;  // relation name becomes 'category'
+}
+```
+
+### @hasOne
+
+```typescript
+function hasOne<T extends Entity>(
+  targetResolver: EntityResolver<T>,
+  definition?: Partial<HasOneDefinition>,
+): PropertyDecorator
+```
+
+Declares a one-to-one relationship where the foreign key lives on the target model.
+
+```typescript
+@model()
+export class Customer extends Entity {
+  @property({id: true})
+  id: number;
+
+  @hasOne(() => Address)
+  address: Address;
+}
+```
+
+### @referencesMany
+
+```typescript
+function referencesMany<T extends Entity>(
+  targetResolver: EntityResolver<T>,
+  definition?: Partial<ReferencesManyDefinition>,
+  propertyDefinition?: Partial<PropertyDefinition>,
+): PropertyDecorator
+```
+
+Stores an array of foreign key IDs on the source model that reference target model instances. The decorator strips a trailing `Ids` suffix from the property name.
+
+```typescript
+@model()
+export class Customer extends Entity {
+  @referencesMany(() => Account)
+  accountIds: number[];  // relation name becomes 'accounts'
+}
+```
+
+<Warning>
+`@referencesMany` requires `emitDecoratorMetadata: true` in your `tsconfig.json`. If TypeScript cannot infer the property type, pass the type explicitly in the third `propertyDefinition` argument.
+</Warning>
+
+---
+
+## Repository interfaces
+
+### Repository\<T\>
+
+```typescript
+export interface Repository<T extends Model> {}
+```
+
+Base marker interface. All repositories extend this.
+
+### CrudRepository\<T, Relations\>
+
+```typescript
+export interface CrudRepository<
+  T extends ValueObject | Entity,
+  Relations extends object = {},
+> extends Repository<T> {
+  create(dataObject: DataObject<T>, options?: Options): Promise<T>;
+  createAll(dataObjects: DataObject<T>[], options?: Options): Promise<T[]>;
+  find(filter?: Filter<T>, options?: Options): Promise<(T & Relations)[]>;
+  updateAll(dataObject: DataObject<T>, where?: Where<T>, options?: Options): Promise<Count>;
+  deleteAll(where?: Where<T>, options?: Options): Promise<Count>;
+  count(where?: Where<T>, options?: Options): Promise<Count>;
+}
+```
+
+Basic CRUD for value objects and entities (no ID-based operations).
+
+### EntityCrudRepository\<T, ID, Relations\>
+
+```typescript
+export interface EntityCrudRepository<
+  T extends Entity,
+  ID,
+  Relations extends object = {},
+> extends EntityRepository<T, ID>, CrudRepository<T, Relations> {
+  entityClass: typeof Entity & {prototype: T};
+  inclusionResolvers: Map<string, InclusionResolver<T, Entity>>;
+
+  save(entity: DataObject<T>, options?: Options): Promise<T>;
+  update(entity: DataObject<T>, options?: Options): Promise<void>;
+  delete(entity: DataObject<T>, options?: Options): Promise<void>;
+  findById(id: ID, filter?: FilterExcludingWhere<T>, options?: Options): Promise<T & Relations>;
+  updateById(id: ID, data: DataObject<T>, options?: Options): Promise<void>;
+  replaceById(id: ID, data: DataObject<T>, options?: Options): Promise<void>;
+  deleteById(id: ID, options?: Options): Promise<void>;
+  exists(id: ID, options?: Options): Promise<boolean>;
+}
+```
+
+Full CRUD operations for entities that have a primary key.
+
+---
+
+## DefaultCrudRepository class
+
+`DefaultCrudRepository` is the main concrete repository class. It wraps `loopback-datasource-juggler` and implements `EntityCrudRepository`.
+
+```typescript
+export class DefaultCrudRepository<
+  T extends Entity,
+  ID,
+  Relations extends object = {},
+> implements EntityCrudRepository<T, ID, Relations> {
+  modelClass: juggler.PersistedModelClass;
+  readonly inclusionResolvers: Map<string, InclusionResolver<T, Entity>>;
+
+  constructor(
+    public entityClass: typeof Entity & {prototype: T},
+    public dataSource: juggler.DataSource,
+  )
+}
+```
+
+Extend `DefaultCrudRepository` to create a repository for your entity:
+
+```typescript
+import {DefaultCrudRepository} from '@loopback/repository';
+import {Todo, TodoRelations} from '../models';
+import {inject} from '@loopback/core';
+
+export class TodoRepository extends DefaultCrudRepository<
+  Todo,
+  typeof Todo.prototype.id,
+  TodoRelations
+> {
+  constructor(
+    @inject('datasources.db') dataSource: juggler.DataSource,
+  ) {
+    super(Todo, dataSource);
+  }
+}
+```
+
+<AccordionGroup>
+  <Accordion title="CRUD methods">
+
+All methods delegate to the underlying juggler connector.
+
+```typescript
+// Create
+create(entity: DataObject<T>, options?: Options): Promise<T>
+createAll(entities: DataObject<T>[], options?: Options): Promise<T[]>
+
+// Read
+find(filter?: Filter<T>, options?: Options): Promise<T[]>
+findById(id: ID, filter?: FilterExcludingWhere<T>, options?: Options): Promise<T>
+findOne(filter?: Filter<T>, options?: Options): Promise<T | null>
+
+// Update
+save(entity: DataObject<T>, options?: Options): Promise<T>
+update(entity: DataObject<T>, options?: Options): Promise<void>
+updateById(id: ID, data: DataObject<T>, options?: Options): Promise<void>
+updateAll(data: DataObject<T>, where?: Where<T>, options?: Options): Promise<Count>
+replaceById(id: ID, data: DataObject<T>, options?: Options): Promise<void>
+
+// Delete
+delete(entity: DataObject<T>, options?: Options): Promise<void>
+deleteById(id: ID, options?: Options): Promise<void>
+deleteAll(where?: Where<T>, options?: Options): Promise<Count>
+
+// Misc
+count(where?: Where<T>, options?: Options): Promise<Count>
+exists(id: ID, options?: Options): Promise<boolean>
+execute(command: Command, parameters: NamedParameters | PositionalParameters, options?: Options): Promise<AnyObject>
+```
+
+  </Accordion>
+
+  <Accordion title="Relation factory helpers">
+
+`DefaultCrudRepository` exposes helpers to create typed relation accessors. Call these in your repository constructor.
+
+```typescript
+protected createHasManyRepositoryFactoryFor<Target extends Entity, TargetId, TargetRelations extends object>(
+  relationName: string,
+  targetRepositoryGetter: Getter<EntityCrudRepository<Target, TargetId, TargetRelations>>,
+): HasManyRepositoryFactory<Target, typeof Entity.prototype.id>
+
+protected createBelongsToAccessorFor<Target extends Entity, TargetId>(
+  relationName: string,
+  targetRepositoryGetter: Getter<EntityCrudRepository<Target, TargetId>>,
+): BelongsToAccessor<Target, typeof Entity.prototype.id>
+
+protected createHasOneRepositoryFactoryFor<Target extends Entity, TargetId, TargetRelations extends object>(
+  relationName: string,
+  targetRepositoryGetter: Getter<EntityCrudRepository<Target, TargetId, TargetRelations>>,
+): HasOneRepositoryFactory<Target, typeof Entity.prototype.id>
+```
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Filter types
+
+Filter types come from `@loopback/filter` (re-exported by `@loopback/repository`).
+
+### Filter\<T\>
+
+```typescript
+interface Filter<MT extends object = AnyObject> {
+  where?: Where<MT>;
+  fields?: Fields<MT>;
+  order?: string[];
+  limit?: number;
+  skip?: number;
+  offset?: number;
+  include?: InclusionFilter[];
+}
+```
+
+### Where\<T\>
+
+A recursive filter object that supports comparison operators (`eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `inq`, `nin`, `between`, `like`, `nlike`, `regexp`) and logical operators (`and`, `or`).
+
+```typescript
+const activeUsers: Where<User> = {
+  and: [
+    {isActive: true},
+    {createdAt: {gte: new Date('2024-01-01')}},
+  ],
+};
+```
+
+### WhereBuilder and FilterBuilder
+
+`WhereBuilder` and `FilterBuilder` provide a fluent API for constructing filter objects.
+
+```typescript
+import {WhereBuilder, FilterBuilder} from '@loopback/repository';
+
+const where = new WhereBuilder<Todo>()
+  .eq('isComplete', false)
+  .between('createdAt', startDate, endDate)
+  .build();
+
+const filter = new FilterBuilder<Todo>()
+  .where(where)
+  .order('title ASC')
+  .limit(10)
+  .offset(20)
+  .include('category')
+  .build();
+```
+
+---
+
+## DataSource interface
+
+```typescript
+export interface DataSource {
+  name: string;
+  connector?: Connector;
+  settings: AnyObject;
+  [property: string]: any;
+}
+```
+
+In practice, LoopBack applications use `juggler.DataSource` from `loopback-datasource-juggler`:
+
+```typescript
+import {juggler} from '@loopback/repository';
+
+export const db = new juggler.DataSource({
+  name: 'db',
+  connector: 'memory',
+});
+```
+
+For a persistent store, specify the connector and its options:
+
+```typescript
+export const pgDb = new juggler.DataSource({
+  name: 'pgDb',
+  connector: 'postgresql',
+  host: 'localhost',
+  port: 5432,
+  database: 'myapp',
+  user: 'admin',
+  password: process.env.DB_PASSWORD,
+});
+```
+
+---
+
+## RepositoryBindings
+
+```typescript
+export namespace RepositoryBindings {
+  const MODELS = 'models';            // namespace for model bindings
+  const REPOSITORIES = 'repositories'; // namespace for repository bindings
+  const DATASOURCES = 'datasources';   // namespace for datasource bindings
+}
+```
+
+```typescript
+export namespace RepositoryTags {
+  const MODEL = 'model';
+  const REPOSITORY = 'repository';
+  const DATASOURCE = 'datasource';
+}
+```
+
+When using `RepositoryMixin`, datasources are bound under `datasources.<name>` and repositories under `repositories.<ClassName>`. Use the `@repository` decorator to inject a repository by class:
+
+```typescript
+import {repository} from '@loopback/repository';
+
+export class TodoController {
+  constructor(
+    @repository(TodoRepository) private todoRepo: TodoRepository,
+  ) {}
+}
+```

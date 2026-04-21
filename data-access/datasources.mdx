@@ -1,0 +1,181 @@
+---
+title: 'DataSources: Connecting LoopBack 4 to a Database'
+description: 'Learn how to configure and inject DataSources in LoopBack 4 to connect your application to databases, REST APIs, and other external systems.'
+keywords: ['loopback 4', 'datasource', 'connector', 'database', 'postgresql', 'mongodb', 'mysql']
+---
+
+A DataSource in LoopBack 4 is a named configuration for a connector instance that represents data in an external system. It tells LoopBack _how_ to reach a backend—what connector to use, where the server lives, and what credentials to use—so that repositories can perform data operations without managing connection details themselves.
+
+## Available connectors
+
+LoopBack connectors fall into two broad categories: database connectors and service connectors.
+
+<CardGroup cols={2}>
+  <Card title="Memory" icon="database">
+    In-process store for development and testing. No external service required.
+    Connector name: `memory`
+  </Card>
+  <Card title="PostgreSQL" icon="database">
+    Full-featured relational database with transaction support.
+    Package: `loopback-connector-postgresql`
+  </Card>
+  <Card title="MongoDB" icon="database">
+    Document-oriented NoSQL database with flexible schema support.
+    Package: `loopback-connector-mongodb`
+  </Card>
+  <Card title="MySQL" icon="database">
+    Widely used relational database with strong ecosystem support.
+    Package: `loopback-connector-mysql`
+  </Card>
+  <Card title="REST" icon="globe">
+    Proxy any REST API as a LoopBack data source.
+    Package: `loopback-connector-rest`
+  </Card>
+  <Card title="Redis (key-value)" icon="database">
+    Key-value store for caching and session management.
+    Connector name: `kv-redis`
+  </Card>
+</CardGroup>
+
+## Generating a DataSource with the CLI
+
+The fastest way to create a DataSource is with the `lb4 datasource` command. It prompts you for connection details and writes the datasource class to `src/datasources/`.
+
+<Steps>
+  <Step title="Run the generator">
+    ```bash
+    lb4 datasource
+    ```
+  </Step>
+  <Step title="Answer the prompts">
+    The CLI asks for a name, connector type, host, port, database name, and credentials. For a PostgreSQL datasource named `db` you might enter:
+
+    - **Name**: `db`
+    - **Connector**: `PostgreSQL`
+    - **Host**: `localhost`
+    - **Port**: `5432`
+    - **Database**: `myapp`
+    - **User**: `myuser`
+    - **Password**: *(leave blank to configure via environment variable)*
+  </Step>
+  <Step title="Review the generated file">
+    The CLI creates `src/datasources/db.datasource.ts` and exports it from `src/datasources/index.ts`.
+  </Step>
+</Steps>
+
+## DataSource class format
+
+The generated file contains a config object and a class that extends `juggler.DataSource`. The class accepts configuration through [dependency injection](/core-concepts), falling back to the static default config when none is provided.
+
+The following example is taken directly from the `todo` example application:
+
+```typescript
+// src/datasources/db.datasource.ts
+import {inject, lifeCycleObserver, LifeCycleObserver} from '@loopback/core';
+import {juggler} from '@loopback/repository';
+
+const config = {
+  name: 'db',
+  connector: 'memory',
+  localStorage: '',
+  file: './data/db.json',
+};
+
+@lifeCycleObserver('datasource')
+export class DbDataSource
+  extends juggler.DataSource
+  implements LifeCycleObserver
+{
+  static dataSourceName = 'db';
+  static readonly defaultConfig = config;
+
+  constructor(
+    @inject('datasources.config.db', {optional: true})
+    dsConfig: object = config,
+  ) {
+    super(dsConfig);
+  }
+}
+```
+
+For a PostgreSQL connection the config object would look like:
+
+```json
+{
+  "name": "db",
+  "connector": "postgresql",
+  "host": "localhost",
+  "port": 5432,
+  "database": "myapp",
+  "user": "myuser",
+  "password": "mypassword"
+}
+```
+
+<Note>
+The `@lifeCycleObserver('datasource')` decorator ensures the datasource disconnects cleanly when the application stops.
+</Note>
+
+## Using environment variables
+
+Hard-coding credentials in source files is a security risk. Override the default config at runtime by binding values to the `datasources.config.<name>` key in your application, or by passing a config object shaped from environment variables.
+
+A common pattern is to construct the config from `process.env` values inside the class:
+
+```typescript
+const config = {
+  name: 'db',
+  connector: 'postgresql',
+  host: process.env.DB_HOST ?? 'localhost',
+  port: Number(process.env.DB_PORT ?? 5432),
+  database: process.env.DB_NAME ?? 'myapp',
+  user: process.env.DB_USER ?? 'myuser',
+  password: process.env.DB_PASSWORD ?? '',
+};
+```
+
+<Warning>
+Never commit real passwords or connection strings to source control. Use environment variables or a secrets manager for production credentials.
+</Warning>
+
+## Injecting a DataSource into a repository
+
+Repositories receive their DataSource via constructor injection. LoopBack's IoC container resolves the binding key `datasources.<name>` at startup:
+
+```typescript
+import {inject} from '@loopback/core';
+import {DefaultCrudRepository} from '@loopback/repository';
+import {DbDataSource} from '../datasources';
+import {Todo, TodoRelations} from '../models';
+
+export class TodoRepository extends DefaultCrudRepository<
+  Todo,
+  typeof Todo.prototype.id,
+  TodoRelations
+> {
+  constructor(@inject('datasources.db') dataSource: DbDataSource) {
+    super(Todo, dataSource);
+  }
+}
+```
+
+The `@inject('datasources.db')` decorator matches the `dataSourceName` static property on `DbDataSource`. LoopBack automatically registers datasource classes bound through `RepositoryMixin` or `app.dataSource()`.
+
+## Key-value DataSources
+
+For Redis or similar key-value stores, use the `kv-redis` connector and pair it with `DefaultKeyValueRepository`:
+
+```typescript
+const config = {
+  name: 'redis',
+  connector: 'kv-redis',
+  host: '127.0.0.1',
+  port: 6379,
+  password: '',
+  db: 0,
+};
+```
+
+<Tip>
+You can register multiple datasources in a single application—one for your primary database and another for caching, file storage, or a third-party REST API.
+</Tip>

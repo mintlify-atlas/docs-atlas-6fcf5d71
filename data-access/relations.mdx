@@ -1,0 +1,444 @@
+---
+title: 'Relations: Connecting Models in LoopBack 4'
+description: 'Define hasMany, belongsTo, hasOne, and hasManyThrough relations between LoopBack 4 models and use include filters for eager loading related data.'
+keywords: ['loopback 4', 'relations', 'hasMany', 'belongsTo', 'hasOne', 'hasManyThrough', 'include filter', 'eager loading']
+---
+
+Real applications rarely work with isolated models. A `TodoList` has many `Todo` items; each `Todo` belongs to exactly one `TodoList`. LoopBack 4 models these connections through _relation decorators_ that annotate your model properties and _constrained repository factories_ that enforce those connections at the data access layer. Each relation also registers an _inclusion resolver_, enabling you to eager-load related models in a single query.
+
+<Note>
+LoopBack 4 implements **weak relations**—referential integrity is enforced by the framework, not the database. Some connectors (PostgreSQL, MySQL) optionally support database-level foreign key constraints through model settings.
+</Note>
+
+## Supported relation types
+
+<CardGroup cols={2}>
+  <Card title="hasMany" icon="arrow-right">
+    One source record maps to zero or more target records. Example: a `TodoList` has many `Todo`s.
+  </Card>
+  <Card title="belongsTo" icon="arrow-left">
+    Each source record belongs to exactly one target record. Example: a `Todo` belongs to one `TodoList`.
+  </Card>
+  <Card title="hasOne" icon="arrow-right">
+    One source record maps to exactly one target record. Example: a `TodoList` has one cover `Image`.
+  </Card>
+  <Card title="hasManyThrough" icon="arrows-left-right">
+    Many-to-many connection through a junction model. Example: a `Doctor` treats many `Patients` through `Appointments`.
+  </Card>
+  <Card title="referencesMany" icon="link">
+    Stores an array of target IDs on the source model instead of using a join table. Useful for NoSQL databases.
+  </Card>
+</CardGroup>
+
+## hasMany
+
+A `hasMany` relation means each source model instance has zero or more related target model instances. The foreign key lives on the target model.
+
+### Model definition
+
+From `examples/todo-list/src/models/todo-list.model.ts`:
+
+```typescript
+import {Entity, hasMany, hasOne, model, property} from '@loopback/repository';
+import {Todo, TodoWithRelations} from './todo.model';
+
+@model()
+export class TodoList extends Entity {
+  @property({type: 'number', id: true, generated: false})
+  id?: number;
+
+  @property({type: 'string', required: true})
+  title: string;
+
+  @hasMany(() => Todo)
+  todos: Todo[];
+
+  constructor(data?: Partial<TodoList>) {
+    super(data);
+  }
+}
+
+export interface TodoListRelations {
+  todos?: TodoWithRelations[];
+}
+
+export type TodoListWithRelations = TodoList & TodoListRelations;
+```
+
+The `@hasMany(() => Todo)` decorator infers the foreign key as `todoListId` (source model name + `Id`). The matching `Todo` model carries a `todoListId` property, either as a plain `@property` or via `@belongsTo`.
+
+### Repository configuration
+
+From `examples/todo-list/src/repositories/todo-list.repository.ts`:
+
+```typescript
+import {Getter, inject} from '@loopback/core';
+import {
+  DefaultCrudRepository,
+  HasManyRepositoryFactory,
+  repository,
+} from '@loopback/repository';
+import {DbDataSource} from '../datasources';
+import {Todo, TodoList, TodoListRelations} from '../models';
+import {TodoRepository} from './todo.repository';
+
+export class TodoListRepository extends DefaultCrudRepository<
+  TodoList,
+  typeof TodoList.prototype.id,
+  TodoListRelations
+> {
+  public readonly todos: HasManyRepositoryFactory<
+    Todo,
+    typeof TodoList.prototype.id
+  >;
+
+  constructor(
+    @inject('datasources.db') dataSource: DbDataSource,
+    @repository.getter('TodoRepository')
+    protected todoRepositoryGetter: Getter<TodoRepository>,
+  ) {
+    super(TodoList, dataSource);
+
+    this.todos = this.createHasManyRepositoryFactoryFor(
+      'todos',
+      todoRepositoryGetter,
+    );
+
+    this.registerInclusionResolver('todos', this.todos.inclusionResolver);
+  }
+}
+```
+
+`registerInclusionResolver` enables eager loading through the `include` filter.
+
+### Available constrained methods
+
+Once configured, `this.todos(sourceId)` gives you:
+
+- `create(data)` — create a related `Todo` for a given `TodoList` id
+- `find(filter?)` — find all related `Todo`s
+- `patch(data, where?)` — patch matching related `Todo`s
+- `delete(where?)` — delete matching related `Todo`s
+
+### Custom foreign key
+
+Override the default foreign key by specifying `keyTo` in the decorator:
+
+```typescript
+@hasMany(() => Order, {keyTo: 'my_customer_id'})
+orders: Order[];
+```
+
+## belongsTo
+
+A `belongsTo` relation means each source model instance belongs to exactly one target instance. The foreign key lives on the source model.
+
+### Model definition
+
+From `examples/todo-list/src/models/todo.model.ts`:
+
+```typescript
+import {belongsTo, Entity, model, property} from '@loopback/repository';
+import {TodoList, TodoListWithRelations} from './todo-list.model';
+
+@model()
+export class Todo extends Entity {
+  @property({type: 'number', id: true, generated: false})
+  id?: number;
+
+  @property({type: 'string', required: true})
+  title: string;
+
+  @property({type: 'string'})
+  desc?: string;
+
+  @property({type: 'boolean'})
+  isComplete?: boolean;
+
+  @belongsTo(() => TodoList)
+  todoListId: number;
+
+  constructor(data?: Partial<Todo>) {
+    super(data);
+  }
+}
+
+export interface TodoRelations {
+  todoList?: TodoListWithRelations;
+}
+
+export type TodoWithRelations = Todo & TodoRelations;
+```
+
+The `@belongsTo(() => TodoList)` decorator uses `todoListId` as the foreign key and creates an accessor named `todoList`.
+
+<Warning>
+Make sure the foreign key property name and the relation name are different. If you use a customized foreign key (for example `todo_list_id`), you must set the relation name explicitly: `@belongsTo(() => TodoList, {name: 'todoList'})`.
+</Warning>
+
+### Repository configuration
+
+From `examples/todo-list/src/repositories/todo.repository.ts`:
+
+```typescript
+import {Getter, inject} from '@loopback/core';
+import {
+  BelongsToAccessor,
+  DefaultCrudRepository,
+  repository,
+} from '@loopback/repository';
+import {DbDataSource} from '../datasources';
+import {Todo, TodoList, TodoRelations} from '../models';
+import {TodoListRepository} from './todo-list.repository';
+
+export class TodoRepository extends DefaultCrudRepository<
+  Todo,
+  typeof Todo.prototype.id,
+  TodoRelations
+> {
+  public readonly todoList: BelongsToAccessor<
+    TodoList,
+    typeof Todo.prototype.id
+  >;
+
+  constructor(
+    @inject('datasources.db') dataSource: DbDataSource,
+    @repository.getter('TodoListRepository')
+    protected todoListRepositoryGetter: Getter<TodoListRepository>,
+  ) {
+    super(Todo, dataSource);
+
+    this.todoList = this.createBelongsToAccessorFor(
+      'todoList',
+      todoListRepositoryGetter,
+    );
+    this.registerInclusionResolver('todoList', this.todoList.inclusionResolver);
+  }
+}
+```
+
+`BelongsToAccessor` is a function: `this.todoList(sourceId)` returns the related `TodoList` instance.
+
+## hasOne
+
+A `hasOne` relation means each source model instance is associated with exactly one target instance. Like `hasMany`, the foreign key lives on the target model.
+
+### Model definition
+
+```typescript
+import {Entity, hasOne, model, property} from '@loopback/repository';
+import {TodoListImage} from './todo-list-image.model';
+
+@model()
+export class TodoList extends Entity {
+  @property({type: 'number', id: true, generated: false})
+  id?: number;
+
+  @hasOne(() => TodoListImage)
+  image: TodoListImage;
+
+  constructor(data?: Partial<TodoList>) {
+    super(data);
+  }
+}
+```
+
+### Repository configuration
+
+```typescript
+import {Getter, inject} from '@loopback/core';
+import {
+  DefaultCrudRepository,
+  HasOneRepositoryFactory,
+  repository,
+} from '@loopback/repository';
+import {TodoListImage, TodoList, TodoListRelations} from '../models';
+import {TodoListImageRepository} from './todo-list-image.repository';
+
+export class TodoListRepository extends DefaultCrudRepository<
+  TodoList,
+  typeof TodoList.prototype.id,
+  TodoListRelations
+> {
+  public readonly image: HasOneRepositoryFactory<
+    TodoListImage,
+    typeof TodoList.prototype.id
+  >;
+
+  constructor(
+    @inject('datasources.db') dataSource: DbDataSource,
+    @repository.getter('TodoListImageRepository')
+    protected todoListImageRepositoryGetter: Getter<TodoListImageRepository>,
+  ) {
+    super(TodoList, dataSource);
+
+    this.image = this.createHasOneRepositoryFactoryFor(
+      'image',
+      todoListImageRepositoryGetter,
+    );
+    this.registerInclusionResolver('image', this.image.inclusionResolver);
+  }
+}
+```
+
+`this.image(sourceId)` exposes `create`, `get`, `patch`, and `delete` for the related image.
+
+## hasManyThrough
+
+A `hasManyThrough` relation connects two models via a junction (through) model, enabling many-to-many associations. Use `@hasMany` with a `through` option specifying the junction model:
+
+```typescript
+import {Entity, hasMany, model, property} from '@loopback/repository';
+import {Appointment} from './appointment.model';
+import {Patient} from './patient.model';
+
+@model()
+export class Doctor extends Entity {
+  @property({type: 'number', id: true, generated: true})
+  id: number;
+
+  @property({type: 'string', required: true})
+  name: string;
+
+  @hasMany(() => Patient, {through: {model: () => Appointment}})
+  patients: Patient[];
+
+  constructor(data?: Partial<Doctor>) {
+    super(data);
+  }
+}
+```
+
+The `Appointment` model holds the foreign keys for both `Doctor` and `Patient`:
+
+```typescript
+@model()
+export class Appointment extends Entity {
+  @property({type: 'number', id: true, generated: true})
+  id: number;
+
+  @property({type: 'number'})
+  doctorId: number;
+
+  @property({type: 'number'})
+  patientId: number;
+}
+```
+
+<Note>
+`hasManyThrough` best works with SQL databases that support joins. Using it with NoSQL databases may produce unexpected behavior.
+</Note>
+
+## referencesMany
+
+`referencesMany` stores an array of target IDs on the source model rather than using a foreign key on the target. This is common in document databases like MongoDB:
+
+```typescript
+import {Entity, model, property, referencesMany} from '@loopback/repository';
+import {Category} from './category.model';
+
+@model()
+export class Product extends Entity {
+  @property({type: 'number', id: true, generated: true})
+  id: number;
+
+  @referencesMany(() => Category)
+  categoryIds: number[];
+}
+```
+
+## Eager loading with include filters
+
+Once inclusion resolvers are registered, pass an `include` array in any `find`, `findOne`, or `findById` call to load related data in one operation:
+
+```typescript
+// Load all TodoLists with their todos and image
+await todoListRepo.find({include: ['todos', 'image']});
+```
+
+This produces results like:
+
+```typescript
+[
+  {
+    id: 1,
+    title: 'Groceries',
+    todos: [
+      {id: 1, title: 'Milk', todoListId: 1},
+      {id: 2, title: 'Eggs', todoListId: 1},
+    ],
+    image: {id: 1, url: 'https://example.com/groceries.png', todoListId: 1},
+  },
+]
+```
+
+### Nested includes with scope
+
+Add a `scope` to filter, order, or limit related records, and nest `include` to traverse multiple levels:
+
+```typescript
+await todoListRepo.find({
+  include: [
+    {
+      relation: 'todos',
+      scope: {
+        where: {isComplete: false},
+        order: ['title ASC'],
+        limit: 5,
+      },
+    },
+  ],
+});
+```
+
+### REST API syntax
+
+The same filter works over HTTP:
+
+```
+GET /todo-lists?filter[include][]=todos
+GET /todo-lists?filter[include][0][relation]=todos&filter[include][1][relation]=image
+```
+
+<Tip>
+For complex nested filters, serialize the filter object to JSON and use `encodeURIComponent(JSON.stringify(filter))` as the query string value.
+</Tip>
+
+## Generating relations with the CLI
+
+<Steps>
+  <Step title="Run the relation generator">
+    ```bash
+    lb4 relation
+    ```
+  </Step>
+  <Step title="Select the relation type">
+    Choose `hasMany`, `belongsTo`, `hasOne`, or `hasManyThrough`.
+  </Step>
+  <Step title="Select source and target models">
+    The CLI updates both model files, both repository files, and registers the inclusion resolver automatically.
+  </Step>
+  <Step title="Review the output">
+    Check the updated model and repository files. The CLI sets sensible defaults for foreign key names that you can customize afterward.
+  </Step>
+</Steps>
+
+<Note>
+The `referencesMany` relation type is not yet supported by the `lb4 relation` generator and must be added manually.
+</Note>
+
+## Relation metadata fields
+
+Each relation decorator accepts optional metadata to override defaults:
+
+| Field | Description | Default |
+|---|---|---|
+| `keyFrom` | Primary key on the source model | Source model's `id` property |
+| `keyTo` | Foreign key on the target model | Source model name + `Id` in camelCase |
+| `name` | Relation name used in queries | Decorated property name |
+
+```typescript
+// Customize both the foreign key and relation name
+@hasMany(() => Order, {keyTo: 'client_id'})
+orders: Order[];
+```

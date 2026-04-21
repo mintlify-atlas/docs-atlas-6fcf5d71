@@ -1,0 +1,336 @@
+---
+title: "Authorization in LoopBack 4: roles, voters, and policies"
+description: "Use @authorize to restrict routes by role or scope, register AuthorizationComponent, and write custom authorizer functions to enforce access policies."
+---
+
+The `@loopback/authorization` package lets you declare access requirements directly on your controller methods and enforce them through a composable system of authorizer functions and voters. Once you mount `AuthorizationComponent`, every decorated endpoint is checked against your policies before the controller method runs — and you control exactly what "allowed" means by implementing the `Authorizer` interface.
+
+## Install and register the component
+
+<Steps>
+  <Step title="Install the package">
+    ```bash
+    npm install @loopback/authorization
+    ```
+  </Step>
+  <Step title="Mount the component in application.ts">
+    Configure the component with a default decision policy, then add it to your application:
+
+    ```typescript
+    import {
+      AuthorizationComponent,
+      AuthorizationBindings,
+      AuthorizationDecision,
+    } from '@loopback/authorization';
+
+    const options: AuthorizationOptions = {
+      // When all authorizers return ABSTAIN, deny the request
+      defaultDecision: AuthorizationDecision.DENY,
+      // The first DENY vote wins immediately
+      precedence: AuthorizationDecision.DENY,
+    };
+
+    app.configure(AuthorizationBindings.COMPONENT).to(options);
+    app.component(AuthorizationComponent);
+    ```
+
+    <Tip>
+      Setting `precedence: AuthorizationDecision.DENY` is the safer default for most applications — it means any single authorizer can reject a request even if others would allow it.
+    </Tip>
+  </Step>
+</Steps>
+
+## Decorate routes with @authorize
+
+Add `@authorize` to any controller method to declare who can access it. The decorator accepts an `AuthorizationMetadata` object.
+
+### Allow or deny by role
+
+```typescript
+import {authorize} from '@loopback/authorization';
+import {authenticate} from '@loopback/authentication';
+
+@authenticate('jwt')
+@authorize({allowedRoles: ['admin']})
+@del('/orders/{id}')
+async deleteOrder(@param.path.string('id') id: string): Promise<void> {
+  await this.orderRepository.deleteById(id);
+}
+```
+
+You can also deny specific roles while allowing all others:
+
+```typescript
+@authorize({deniedRoles: ['guest']})
+@get('/reports')
+async getReports(): Promise<Report[]> {
+  return this.reportRepository.find();
+}
+```
+
+### Apply authorization at the class level
+
+Decorate the entire controller class to apply the same rule to all methods. Use `@authorize.skip()` on individual methods that should be exempt:
+
+```typescript
+@authorize({allowedRoles: ['ADMIN']})
+export class AdminController {
+  @get('/number-of-views')
+  numOfViews(): number {
+    return 100;
+  }
+
+  // This method is accessible without the ADMIN role
+  @authorize.skip()
+  @get('/hello')
+  hello(): string {
+    return 'Hello';
+  }
+}
+```
+
+### Restrict by OAuth scope
+
+```typescript
+@authenticate('jwt')
+@authorize({resource: 'order', scopes: ['create']})
+@post('/users/{userId}/orders')
+async createOrder(
+  @param.path.string('userId') userId: string,
+  @requestBody() order: Order,
+): Promise<Order> {
+  return this.userRepo.orders(userId).create(order);
+}
+```
+
+### Full decorator options
+
+The `@authorize` decorator maps to `AuthorizationMetadata`:
+
+| Property | Type | Description |
+|---|---|---|
+| `allowedRoles` | `string[]` | Only principals with one of these roles may proceed |
+| `deniedRoles` | `string[]` | Principals with any of these roles are blocked |
+| `scopes` | `string[]` | OAuth-style scopes required to access the resource |
+| `resource` | `string` | Logical name for the resource (defaults to the method name) |
+| `voters` | `Authorizer[]` | Per-endpoint voter functions that supplement global authorizers |
+| `skip` | `boolean` | Bypass authorization entirely for this method |
+
+## Built-in role constants
+
+`@loopback/authorization` exports four built-in role identifiers that you can use in `allowedRoles` or `deniedRoles`:
+
+```typescript
+import {EVERYONE, AUTHENTICATED, UNAUTHENTICATED, ANONYMOUS} from '@loopback/authorization';
+
+@authorize({allowedRoles: [AUTHENTICATED]})
+@get('/profile')
+async getProfile(): Promise<Profile> { /* ... */ }
+```
+
+## Write a custom authorizer
+
+An authorizer is a function (or a provider class exposing one) that receives the current request context and the endpoint's authorization metadata, then returns `ALLOW`, `DENY`, or `ABSTAIN`.
+
+```typescript
+import {
+  AuthorizationContext,
+  AuthorizationDecision,
+  AuthorizationMetadata,
+  Authorizer,
+} from '@loopback/authorization';
+import {Provider} from '@loopback/core';
+
+export class MyAuthorizationProvider implements Provider<Authorizer> {
+  value(): Authorizer {
+    return this.authorize.bind(this);
+  }
+
+  async authorize(
+    context: AuthorizationContext,
+    metadata: AuthorizationMetadata,
+  ): Promise<AuthorizationDecision> {
+    const currentUser = context.principals[0];
+
+    // Allow admins to do anything
+    if (currentUser?.roles?.includes('admin')) {
+      return AuthorizationDecision.ALLOW;
+    }
+
+    // Deny access to the cancelOrder endpoint for non-admin users
+    if (context.resource === 'OrderController.prototype.cancelOrder') {
+      return AuthorizationDecision.DENY;
+    }
+
+    // Pass the decision to other authorizers
+    return AuthorizationDecision.ABSTAIN;
+  }
+}
+```
+
+Register the provider in `application.ts` and tag it as an authorizer:
+
+```typescript
+import {AuthorizationTags} from '@loopback/authorization';
+
+export class MyApplication extends BootMixin(
+  ServiceMixin(RepositoryMixin(RestApplication)),
+) {
+  constructor(options: ApplicationConfig = {}) {
+    super(options);
+
+    this.component(AuthorizationComponent);
+
+    this.bind('authorizationProviders.my-authorizer-provider')
+      .toProvider(MyAuthorizationProvider)
+      .tag(AuthorizationTags.AUTHORIZER);
+  }
+}
+```
+
+<Note>
+  Authorizers tagged with `AuthorizationTags.AUTHORIZER` are global — they run for every `@authorize`-decorated endpoint in your application.
+</Note>
+
+## Decision matrix: ALLOW, DENY, ABSTAIN
+
+Each authorizer returns one of three decisions. The authorization interceptor collects votes from all registered authorizers plus any endpoint-specific voters, then applies your configured `precedence` and `defaultDecision` rules to reach a final verdict.
+
+<Tabs>
+  <Tab title="DENY precedence (default)">
+    With `precedence: AuthorizationDecision.DENY`:
+
+    | Votes | Final decision |
+    |---|---|
+    | At least one DENY | DENY |
+    | No DENY, at least one ALLOW | ALLOW |
+    | All ABSTAIN | Uses `defaultDecision` |
+  </Tab>
+  <Tab title="ALLOW precedence">
+    With `precedence: AuthorizationDecision.ALLOW`:
+
+    | Votes | Final decision |
+    |---|---|
+    | At least one ALLOW | ALLOW |
+    | No ALLOW, at least one DENY | DENY |
+    | All ABSTAIN | Uses `defaultDecision` |
+  </Tab>
+</Tabs>
+
+## Per-endpoint voters
+
+Voters are authorizer functions defined directly in the `@authorize` decorator. Unlike global authorizers, voters only run for the specific endpoint they are attached to. This makes them useful for ownership checks and other per-resource logic.
+
+```typescript
+async function compareId(
+  authorizationCtx: AuthorizationContext,
+  metadata: AuthorizationMetadata,
+): Promise<AuthorizationDecision> {
+  if (authorizationCtx.principals.length > 0) {
+    const currentUserId = authorizationCtx.principals[0].id;
+    const requestedUserId = authorizationCtx.invocationContext.args[0];
+    if (currentUserId === requestedUserId) {
+      return AuthorizationDecision.ALLOW;
+    }
+    return AuthorizationDecision.DENY;
+  }
+  return AuthorizationDecision.DENY;
+}
+
+@authenticate('jwt')
+@authorize({resource: 'order', scopes: ['patch'], voters: [compareId]})
+async patchOrders(
+  @param.path.string('userId') userId: string,
+  @requestBody() order: Partial<Order>,
+): Promise<Count> {
+  return this.userRepo.orders(userId).patch(order);
+}
+```
+
+## RBAC patterns
+
+Role-based access control (RBAC) in LoopBack 4 combines the `@authorize` decorator with a global authorizer that checks the current principal's roles.
+
+<Steps>
+  <Step title="Declare roles in your user model">
+    Include a `roles` property in your user or user profile so the authorizer can read it:
+
+    ```typescript
+    export type UserWithRoles = UserProfile & {roles: string[]};
+    ```
+  </Step>
+  <Step title="Pass roles through the token or user service">
+    Include roles in the `UserProfile` object returned by `convertToUserProfile()`:
+
+    ```typescript
+    convertToUserProfile(user: MyUser): UserProfile {
+      return {
+        [securityId]: user.id.toString(),
+        name: user.username,
+        roles: user.roles, // include roles here
+      };
+    }
+    ```
+  </Step>
+  <Step title="Write an authorizer that reads roles from the principal">
+    ```typescript
+    async authorize(
+      context: AuthorizationContext,
+      metadata: AuthorizationMetadata,
+    ): Promise<AuthorizationDecision> {
+      const principal = context.principals[0];
+      const userRoles: string[] = (principal as UserWithRoles).roles ?? [];
+      const allowedRoles = metadata.allowedRoles ?? [];
+
+      if (allowedRoles.length === 0) return AuthorizationDecision.ABSTAIN;
+
+      const hasRole = userRoles.some(role => allowedRoles.includes(role));
+      return hasRole ? AuthorizationDecision.ALLOW : AuthorizationDecision.DENY;
+    }
+    ```
+  </Step>
+  <Step title="Annotate your endpoints">
+    ```typescript
+    @authorize({allowedRoles: ['admin']})
+    @del('/users/{id}')
+    async deleteUser(@param.path.string('id') id: string): Promise<void> {
+      await this.userRepository.deleteById(id);
+    }
+    ```
+  </Step>
+</Steps>
+
+## Combining authentication and authorization
+
+Authentication establishes identity; authorization decides what that identity can do. Use both decorators together on protected endpoints:
+
+```typescript
+@authenticate('jwt')          // 1. Verify the JWT and populate SecurityBindings.USER
+@authorize({allowedRoles: ['admin'], scopes: ['create']})  // 2. Check role + scope
+@post('/users/{userId}/orders')
+async createOrder(
+  @param.path.string('userId') userId: string,
+  @requestBody() order: Order,
+): Promise<Order> {
+  return this.userRepo.orders(userId).create(order);
+}
+```
+
+The request flow is:
+
+1. The authentication action verifies the token and sets `SecurityBindings.USER`.
+2. The authorization interceptor reads the principal from `SecurityBindings.USER` and passes it to your authorizers.
+3. Your authorizer returns `ALLOW` or `DENY` based on roles, scopes, or any custom logic.
+
+<Warning>
+  Always apply `@authenticate` before `@authorize` on a route. Without authentication, `context.principals` will be empty, and most authorizers will default to `DENY`.
+</Warning>
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="key" href="/security/authentication">
+    Set up JWT authentication, protect routes, and write custom strategies
+  </Card>
+  <Card title="Building controllers" icon="code" href="/building-apis/controllers">
+    Learn how controllers and dependency injection work together
+  </Card>
+</CardGroup>

@@ -1,0 +1,540 @@
+---
+title: "@loopback/rest — REST Server, Routes, and Sequences"
+description: "API reference for @loopback/rest: RestApplication, RestServer config, @get/@post route decorators, @param decorators, sequences, RestBindings, and HttpErrors."
+keywords: ["loopback", "rest", "RestApplication", "RestServer", "route decorators", "sequence", "RestBindings", "HttpErrors"]
+---
+
+`@loopback/rest` provides a production-ready HTTP server for LoopBack 4 applications. It integrates with `@loopback/openapi-v3` to automatically generate an OpenAPI 3.0 specification from your controller decorators, and includes a middleware-based sequence architecture for request handling.
+
+```bash
+npm install @loopback/rest
+```
+
+<Note>
+Starting from version 6.0.0, newly generated applications use the middleware-based `MiddlewareSequence` by default.
+</Note>
+
+## RestApplication class
+
+`RestApplication` extends `Application` and automatically mounts one `RestServer` instance via `RestComponent`. Use it when your application has a single REST server.
+
+```typescript
+export class RestApplication extends Application implements HttpServerLike {
+  get restServer(): RestServer;
+  get requestHandler(): HttpRequestListener;
+
+  constructor(config?: ApplicationConfig, parent?: Context);
+}
+```
+
+```typescript
+import {RestApplication} from '@loopback/rest';
+
+const app = new RestApplication({
+  rest: {port: 3000, host: '127.0.0.1'},
+});
+await app.start();
+```
+
+<Warning>
+`RestApplication` does not support multiple server bindings. To add more servers, extend `Application` directly and call `app.component(RestComponent)`.
+</Warning>
+
+<AccordionGroup>
+  <Accordion title="sequence">
+
+```typescript
+sequence(sequence: Constructor<SequenceHandler>): Binding
+```
+
+Replaces the default sequence with your own implementation.
+
+```typescript
+app.sequence(MyCustomSequence);
+```
+
+  </Accordion>
+
+  <Accordion title="handler">
+
+```typescript
+handler(handlerFn: SequenceFunction): void
+```
+
+Sets a simple function as the sequence handler. Useful for lightweight applications.
+
+```typescript
+app.handler(({request, response}, sequence) => {
+  sequence.send(response, 'hello world');
+});
+```
+
+  </Accordion>
+
+  <Accordion title="route">
+
+```typescript
+route(verb: string, path: string, spec: OperationObject, handler: Function): Binding
+route<T>(verb: string, path: string, spec: OperationObject, controllerCtor: ControllerClass<T>, controllerFactory: ControllerFactory<T>, methodName: string): Binding
+route(route: RouteEntry): Binding
+```
+
+Registers a REST route imperatively. For most use cases, prefer the `@get`, `@post`, etc. decorators on controller methods.
+
+  </Accordion>
+
+  <Accordion title="basePath">
+
+```typescript
+basePath(path?: string): void
+```
+
+Prefixes all routes with the given path segment. For example, `app.basePath('/api')` makes routes accessible at `/api/...`.
+
+  </Accordion>
+
+  <Accordion title="static">
+
+```typescript
+static(path: PathParams, rootDir: string, options?: ServeStaticOptions): void
+```
+
+Mounts a directory to serve static assets.
+
+  </Accordion>
+
+  <Accordion title="expressMiddleware">
+
+```typescript
+expressMiddleware(
+  middlewareFactory: ExpressMiddlewareFactory<CFG>,
+  middlewareConfig?: CFG,
+  options?: MiddlewareBindingOptions,
+): Binding<Middleware>
+
+expressMiddleware(
+  key: BindingAddress,
+  middleware: ExpressRequestHandler | ExpressRequestHandler[],
+  options?: MiddlewareBindingOptions,
+): Binding<Middleware>
+```
+
+Registers an Express middleware factory or handler directly. Accepts both factory functions (like `cors`) and pre-configured handler instances.
+
+  </Accordion>
+
+  <Accordion title="mountExpressRouter">
+
+```typescript
+mountExpressRouter(
+  basePath: string,
+  router: ExpressRequestHandler,
+  spec?: RouterSpec,
+): void
+```
+
+Attaches a legacy Express router at the given base path. Optionally accepts a partial OpenAPI spec to document the router's endpoints.
+
+  </Accordion>
+
+  <Accordion title="api">
+
+```typescript
+api(spec: OpenApiSpec): Binding
+```
+
+Manually sets the OpenAPI specification for this application, overriding any spec built from controller decorators.
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## RestServer configuration
+
+Pass configuration under the `rest` key of `ApplicationConfig`.
+
+```typescript
+export interface RestServerConfig {
+  host?: string;                   // default: undefined (all interfaces)
+  port?: number;                   // default: 3000
+  path?: string;                   // Unix socket path (alternative to host/port)
+  protocol?: HttpProtocol;         // 'http' | 'https', default: 'http'
+  basePath?: string;               // URL prefix for all routes
+  requestBodyParser?: RequestBodyParserOptions;
+  openApiSpec?: OpenApiSpecOptions;
+  apiExplorer?: ApiExplorerOptions;
+  cors?: cors.CorsOptions;
+  expressSettings?: Record<string, unknown>;
+  router?: RestRouterOptions;
+  sequence?: Constructor<SequenceHandler>;
+}
+```
+
+```typescript
+const app = new RestApplication({
+  rest: {
+    host: '0.0.0.0',
+    port: 8080,
+    basePath: '/api',
+    openApiSpec: {
+      setServersFromRequest: true,
+    },
+    apiExplorer: {
+      url: 'https://explorer.loopback.io',
+    },
+  },
+});
+```
+
+### openApiSpec options
+
+```typescript
+interface OpenApiSpecOptions {
+  disabled?: boolean;
+  endpointMapping?: {[path: string]: OpenApiSpecForm};
+  setServersFromRequest?: boolean;
+}
+```
+
+### apiExplorer options
+
+```typescript
+interface ApiExplorerOptions {
+  disabled?: boolean;
+  url?: string;        // External explorer URL
+  httpUrl?: string;    // HTTP-only fallback URL
+}
+```
+
+---
+
+## Route decorators
+
+Route decorators come from `@loopback/openapi-v3` and are re-exported by `@loopback/rest`. Each one maps a controller method to an HTTP verb and path, and accepts an optional partial `OperationObject` to supplement the generated spec.
+
+```typescript
+import {get, post, put, patch, del} from '@loopback/rest';
+```
+
+<AccordionGroup>
+  <Accordion title="@get">
+
+```typescript
+function get(path: string, spec?: OperationSpecWithPathAndVerb): MethodDecorator
+```
+
+Maps a controller method to `GET <path>`.
+
+```typescript
+@get('/todos/{id}', {
+  responses: {
+    '200': {description: 'A Todo instance'},
+  },
+})
+async findById(@param.path.number('id') id: number): Promise<Todo> {
+  return this.todoRepo.findById(id);
+}
+```
+
+  </Accordion>
+
+  <Accordion title="@post">
+
+```typescript
+function post(path: string, spec?: OperationSpecWithPathAndVerb): MethodDecorator
+```
+
+Maps a controller method to `POST <path>`.
+
+  </Accordion>
+
+  <Accordion title="@put">
+
+```typescript
+function put(path: string, spec?: OperationSpecWithPathAndVerb): MethodDecorator
+```
+
+Maps a controller method to `PUT <path>`.
+
+  </Accordion>
+
+  <Accordion title="@patch">
+
+```typescript
+function patch(path: string, spec?: OperationSpecWithPathAndVerb): MethodDecorator
+```
+
+Maps a controller method to `PATCH <path>`.
+
+  </Accordion>
+
+  <Accordion title="@del">
+
+```typescript
+function del(path: string, spec?: OperationSpecWithPathAndVerb): MethodDecorator
+```
+
+Maps a controller method to `DELETE <path>`. Named `del` because `delete` is a reserved JavaScript keyword.
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Parameter decorators
+
+`@param` decorators extract values from different parts of an HTTP request and inject them as method arguments.
+
+<AccordionGroup>
+  <Accordion title="@param.path">
+
+```typescript
+param.path.string(name: string, spec?: Partial<ParameterObject>): ParameterDecorator
+param.path.number(name: string, spec?: Partial<ParameterObject>): ParameterDecorator
+param.path.integer(name: string, spec?: Partial<ParameterObject>): ParameterDecorator
+param.path.boolean(name: string, spec?: Partial<ParameterObject>): ParameterDecorator
+```
+
+Extracts a path segment from the URL. The `name` must match a `{name}` placeholder in the route path.
+
+```typescript
+@get('/users/{userId}')
+async getUser(@param.path.string('userId') userId: string) {
+  return this.userRepo.findById(userId);
+}
+```
+
+  </Accordion>
+
+  <Accordion title="@param.query">
+
+```typescript
+param.query.string(name: string, spec?: Partial<ParameterObject>): ParameterDecorator
+param.query.number(name: string, spec?: Partial<ParameterObject>): ParameterDecorator
+param.query.boolean(name: string, spec?: Partial<ParameterObject>): ParameterDecorator
+param.query.object(name: string, schema?: SchemaObject, spec?: Partial<ParameterObject>): ParameterDecorator
+```
+
+Extracts a query string parameter.
+
+```typescript
+@get('/todos')
+async find(@param.query.string('title') title?: string) {
+  return this.todoRepo.find({where: {title}});
+}
+```
+
+  </Accordion>
+
+  <Accordion title="@param.header">
+
+```typescript
+param.header.string(name: string, spec?: Partial<ParameterObject>): ParameterDecorator
+param.header.number(name: string, spec?: Partial<ParameterObject>): ParameterDecorator
+```
+
+Extracts an HTTP header value.
+
+```typescript
+@get('/profile')
+async getProfile(
+  @param.header.string('x-api-key') apiKey: string,
+) {}
+```
+
+  </Accordion>
+
+  <Accordion title="@param (generic)">
+
+```typescript
+function param(paramSpec: ParameterObject): ParameterDecorator
+```
+
+Base decorator accepting a full `ParameterObject`. Use the typed variants above unless you need fine-grained control over the OpenAPI parameter spec.
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## @requestBody decorator
+
+```typescript
+function requestBody(
+  requestBodySpec?: Partial<RequestBodyObject>,
+): ParameterDecorator
+```
+
+Marks a parameter for injection from the HTTP request body. The framework parses the body according to the `Content-Type` header and the declared schema.
+
+```typescript
+import {requestBody, post} from '@loopback/rest';
+
+@post('/todos')
+async create(@requestBody() todo: Todo): Promise<Todo> {
+  return this.todoRepo.create(todo);
+}
+```
+
+Use `requestBody.array` to declare an array body:
+
+```typescript
+@post('/todos/batch')
+async createAll(
+  @requestBody.array({schema: getModelSchemaRef(Todo)}) todos: Todo[],
+): Promise<Todo[]> {
+  return this.todoRepo.createAll(todos);
+}
+```
+
+---
+
+## Sequence and SequenceActions
+
+A sequence defines how an incoming request is processed end-to-end. The default sequence is `MiddlewareSequence` (middleware-based); `DefaultSequence` is available for action-based request handling.
+
+### SequenceHandler interface
+
+```typescript
+export interface SequenceHandler {
+  handle(context: RequestContext): Promise<void>;
+}
+```
+
+### DefaultSequence
+
+```typescript
+export class DefaultSequence implements SequenceHandler {
+  constructor(
+    @inject(SequenceActions.FIND_ROUTE) protected findRoute: FindRoute,
+    @inject(SequenceActions.PARSE_PARAMS) protected parseParams: ParseParams,
+    @inject(SequenceActions.INVOKE_METHOD) protected invoke: InvokeMethod,
+    @inject(SequenceActions.SEND) public send: Send,
+    @inject(SequenceActions.REJECT) public reject: Reject,
+  )
+
+  async handle(context: RequestContext): Promise<void>
+}
+```
+
+Steps performed by `DefaultSequence.handle`:
+
+1. Run registered Express middleware.
+2. `findRoute` — match the request to a controller method.
+3. `parseParams` — extract path, query, header, and body arguments.
+4. `invoke` — call the controller method.
+5. `send` — write the result to the HTTP response.
+6. `reject` — handle any error thrown during the above steps.
+
+### MiddlewareSequence
+
+```typescript
+@injectable({scope: BindingScope.SINGLETON})
+export class MiddlewareSequence implements SequenceHandler {
+  static defaultOptions: InvokeMiddlewareOptions;
+
+  constructor(
+    @inject.context() context: Context,
+    @inject(RestBindings.INVOKE_MIDDLEWARE_SERVICE) readonly invokeMiddleware: InvokeMiddleware,
+    @config() readonly options: InvokeMiddlewareOptions,
+  )
+
+  async handle(context: RequestContext): Promise<void>
+}
+```
+
+`MiddlewareSequence` runs ordered middleware groups. The default group order is:
+
+```typescript
+[
+  'sendResponse',
+  'cors',
+  'apiSpec',
+  'middleware',
+  'findRoute',
+  'authentication',
+  'parseParams',
+  'invokeMethod',
+]
+```
+
+---
+
+## RestBindings
+
+`RestBindings` is a namespace of `BindingKey` constants for REST-specific bindings.
+
+```typescript
+export namespace RestBindings {
+  const CONFIG: BindingKey<RestServerConfig>;     // application config 'rest' property
+  const HOST: BindingKey<string | undefined>;     // 'rest.host'
+  const PORT: BindingKey<number>;                 // 'rest.port'
+  const URL: BindingKey<string>;                  // 'rest.url'
+  const BASE_PATH: BindingKey<string>;            // 'rest.basePath'
+  const PROTOCOL: BindingKey<HttpProtocol>;       // 'rest.protocol'
+  const HTTPS_OPTIONS: BindingKey<https.ServerOptions>;
+  const SERVER: BindingKey<RestServer>;           // 'servers.RestServer'
+  const API_SPEC: BindingKey<OpenApiSpec>;        // 'rest.apiSpec'
+  const SEQUENCE: BindingKey<SequenceHandler>;    // 'rest.sequence'
+  const ROUTES: string;                           // 'routes' (namespace)
+
+  namespace SequenceActions {
+    const FIND_ROUTE: BindingKey<FindRoute>;
+    const PARSE_PARAMS: BindingKey<ParseParams>;
+    const INVOKE_METHOD: BindingKey<InvokeMethod>;
+    const SEND: BindingKey<Send>;
+    const REJECT: BindingKey<Reject>;
+    const LOG_ERROR: BindingKey<LogError>;
+    const INVOKE_MIDDLEWARE: BindingKey<InvokeMiddleware>;
+  }
+
+  namespace Http {
+    const REQUEST: BindingKey<Request>;           // 'rest.http.request'
+    const RESPONSE: BindingKey<Response>;         // 'rest.http.response'
+    const CONTEXT: BindingKey<Context>;           // 'rest.http.request.context'
+  }
+
+  namespace Operation {
+    const ROUTE: BindingKey<ResolvedRoute>;
+    const PARAMS: BindingKey<OperationArgs>;
+    const RETURN_VALUE: BindingKey<OperationRetval>;
+  }
+}
+```
+
+---
+
+## Error handling with HttpErrors
+
+`@loopback/rest` exports `HttpErrors` from the `http-errors` package. Throwing an `HttpErrors` instance from a controller method causes the sequence to return the appropriate HTTP status code to the client.
+
+```typescript
+import {HttpErrors} from '@loopback/rest';
+
+@get('/todos/{id}')
+async findById(@param.path.number('id') id: number): Promise<Todo> {
+  const todo = await this.todoRepo.findById(id);
+  if (!todo) {
+    throw new HttpErrors.NotFound(`Todo with id ${id} not found`);
+  }
+  return todo;
+}
+```
+
+Common classes:
+
+| Class | Status code |
+|---|---|
+| `HttpErrors.BadRequest` | 400 |
+| `HttpErrors.Unauthorized` | 401 |
+| `HttpErrors.Forbidden` | 403 |
+| `HttpErrors.NotFound` | 404 |
+| `HttpErrors.Conflict` | 409 |
+| `HttpErrors.UnprocessableEntity` | 422 |
+| `HttpErrors.TooManyRequests` | 429 |
+| `HttpErrors.InternalServerError` | 500 |
+
+<Tip>
+Use `HttpErrors.UnprocessableEntity` (422) for validation failures. The framework's built-in request body validator throws this automatically when a request body does not match the declared schema.
+</Tip>

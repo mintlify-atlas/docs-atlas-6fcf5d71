@@ -1,0 +1,406 @@
+---
+title: 'LoopBack 4 CLI: Complete lb4 Generators Reference'
+description: 'Reference for the lb4 CLI — scaffold apps, extensions, controllers, models, datasources, repositories, relations, services, interceptors, and observers.'
+keywords: ['loopback', 'lb4', 'cli', 'generator', 'scaffold', 'controller', 'model', 'datasource', 'repository', 'relation']
+---
+
+The `lb4` command-line interface accelerates development by scaffolding fully-formed TypeScript files wired to the rest of your application. Rather than hand-writing boilerplate, you answer a few prompts and the CLI generates the correct class, registers it in the appropriate index file, and (where relevant) installs connector packages for you. Every generator follows LoopBack's naming conventions: `PascalCase` for class names, `kebab-case` for file names, and `camelCase` for variables.
+
+## Installation
+
+```bash
+npm install -g @loopback/cli
+```
+
+Verify the installation and check the current version:
+
+```bash
+lb4 --version
+```
+
+## Project generators
+
+Use these commands to scaffold a complete project from scratch.
+
+<AccordionGroup>
+  <Accordion title="lb4 app — scaffold a full application">
+    Creates a new LoopBack 4 application with the standard directory layout, `tsconfig.json`, `package.json`, a root `Application` class, and optional extras.
+
+    ```bash
+    lb4 app
+    ? Project name: my-api
+    ? Project description: My LoopBack 4 API
+    ? Project root directory: my-api
+    ? Application class name: MyApiApplication
+    ? Select features to enable in the project:
+      ◉ Enable eslint
+      ◉ Enable prettier
+      ◉ Enable mocha
+      ◉ Enable loopbackBuild
+      ◉ Enable vscode
+      ◉ Enable docker
+      ◉ Enable repositories
+      ◉ Enable services
+    ```
+
+    **Options:**
+
+    | Flag | Description |
+    | --- | --- |
+    | `--applicationName` | Application class name |
+    | `--docker` | Include `Dockerfile` and `.dockerignore` |
+    | `--repositories` | Include `RepositoryMixin` |
+    | `--services` | Include `ServiceMixin` |
+    | `--apiconnect` | Include `ApiConnectComponent` |
+  </Accordion>
+
+  <Accordion title="lb4 extension — scaffold an extension package">
+    Creates a new extension project with the correct `peerDependencies` setup so it can be published as a standalone npm package and consumed by any LoopBack 4 application.
+
+    ```bash
+    lb4 extension
+    ? Project name: my-lb4-extension
+    ? Project description: A LoopBack 4 extension
+    ? Project root directory: my-lb4-extension
+    ? Class name: MyExtension
+    ```
+
+    The generated project includes a skeleton `Component` class, `tsconfig.json`, and `package.json` with `@loopback/core` listed as a `peerDependency`.
+  </Accordion>
+
+  <Accordion title="lb4 example — download an official example">
+    Downloads and installs an official LoopBack 4 example application locally.
+
+    ```bash
+    lb4 example
+    ? What example would you like to clone? todo
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Artifact generators
+
+Run these commands from inside an existing LoopBack 4 project. Each generator checks that the current directory is a valid LoopBack project before proceeding.
+
+### lb4 controller
+
+Generates a controller class in `src/controllers/`. Choose between an empty controller or a fully wired CRUD controller.
+
+```bash
+lb4 controller
+? Controller class name: Todo
+? What kind of controller would you like to generate?
+  Empty Controller
+❯ REST Controller with CRUD functions
+? What is the name of the model to use with this CRUD repository? Todo
+? What is the name of your CRUD repository? TodoRepository
+? What is the name of ID property? id
+? What is the type of your ID? number
+? Is the id omitted when creating a new instance? Yes
+? What is the base HTTP path name of the CRUD operations? /todos
+```
+
+<Tabs>
+  <Tab title="Empty controller">
+    ```bash
+    lb4 controller --controllerType=BASIC TodoEmpty
+    ```
+    Generates a class with no methods — a blank slate you populate yourself.
+  </Tab>
+  <Tab title="CRUD controller">
+    ```bash
+    lb4 controller --controllerType=REST Todo
+    ```
+    Generates `create`, `find`, `findById`, `updateById`, `replaceById`, and `deleteById` methods, each decorated with the appropriate `@post`, `@get`, `@patch`, `@put`, and `@del` decorators.
+  </Tab>
+</Tabs>
+
+### lb4 model
+
+Generates a model class in `src/models/`. You are prompted to add properties one by one; press Enter with an empty name to finish.
+
+```bash
+lb4 model
+? Model class name: Todo
+? Please select the model base class:
+❯ Entity (A persisted model with an ID)
+  Model (A business domain object)
+? Allow additional (free-form) properties? No
+Let's add a property to Todo:
+? Enter the property name: id
+? Property type: number
+? Is id the ID property? Yes
+? Is the ID auto-generated? Yes
+? Is it required? No
+```
+
+<Note>
+Choose `Entity` when the model will be persisted (has an `id`). Choose `Model` for plain data objects that are not stored in a datasource.
+</Note>
+
+**Inheritance:** When prompted for the base class, any existing model classes in your project also appear as options, enabling single-level model inheritance.
+
+### lb4 datasource
+
+Generates a datasource class and JSON configuration in `src/datasources/`. Prompts you to choose a connector from a curated list and then asks connector-specific questions (host, port, credentials, etc.). Installs the connector npm package automatically.
+
+```bash
+lb4 datasource
+? Datasource name: db
+? Select the connector for db:
+❯ In-memory db (supported by StrongLoop)
+  MongoDB (supported by StrongLoop)
+  MySQL (supported by StrongLoop)
+  PostgreSQL (supported by StrongLoop)
+  ...
+```
+
+The generator creates two files:
+
+- `src/datasources/db.datasource.ts` — the TypeScript class
+- `src/datasources/db.datasource.config.json` — the connector configuration
+
+### lb4 repository
+
+Generates a repository class in `src/repositories/` wired to a model and a datasource. The generator detects available models and datasources from your project.
+
+```bash
+lb4 repository
+? Please select the datasource DbDatasource
+? Select the model(s) you want to generate a repository for Todo
+? Please select the repository base class:
+❯ DefaultCrudRepository (Juggler bridge)
+  DefaultKeyValueRepository (For access to a key-value store)
+```
+
+<Tabs>
+  <Tab title="CRUD repository">
+    Extends `DefaultCrudRepository<Todo, typeof Todo.prototype.id, TodoRelations>`. Supports `create`, `find`, `findById`, `update`, `delete`, and relation navigation methods.
+  </Tab>
+  <Tab title="Key-value repository">
+    Extends `DefaultKeyValueRepository<Todo>`. Used with in-memory or Redis connectors for simple key-based access.
+  </Tab>
+</Tabs>
+
+### lb4 relation
+
+Generates the relation metadata on both source and target models, and adds relation accessor methods to the relevant repository.
+
+```bash
+lb4 relation
+? Please select the relation type hasMany
+? Please select source model Todo
+? Please select target model TodoList
+? Source property name for the relation getter todos
+? Relation name todos
+? Foreign key name to define on the target model todoId
+? Allow Todo queries to include data from related TodoList instances? Yes
+```
+
+Supported relation types:
+
+<CardGroup cols={2}>
+  <Card title="hasMany" icon="arrow-right">
+    One source record has many target records. Generates `@hasMany(() => Target)` on the source model.
+  </Card>
+  <Card title="belongsTo" icon="arrow-left">
+    Target holds a foreign key pointing to the source. Generates `@belongsTo(() => Source)` on the target model.
+  </Card>
+  <Card title="hasOne" icon="minus">
+    One-to-one relation. Generates `@hasOne(() => Target)` on the source model.
+  </Card>
+  <Card title="hasManyThrough" icon="arrows-left-right">
+    Many-to-many via a join table. Generates `@hasMany(() => Target, {through: {model: () => Through}})`.
+  </Card>
+  <Card title="referencesMany" icon="link">
+    Array of foreign keys stored on the source. Generates `@referencesMany(() => Target)`.
+  </Card>
+</CardGroup>
+
+### lb4 service
+
+Generates a service in `src/services/`. Services represent external REST or SOAP APIs (via a service proxy), or local business logic classes.
+
+```bash
+lb4 service
+? Service type:
+❯ Remote service proxy backed by a data source
+  Local service class
+  Local service provider
+? Please select the datasource GeocoderDatasource
+? Service name: Geocoder
+```
+
+<Tabs>
+  <Tab title="Remote proxy">
+    Generates an interface and a class decorated with `@serviceProxy(datasource)`. Use this when calling an external REST or SOAP API via `@loopback/service-proxy`.
+  </Tab>
+  <Tab title="Local class">
+    Generates a plain TypeScript class decorated with `@injectable`. Use this for application-internal business logic.
+  </Tab>
+  <Tab title="Local provider">
+    Generates a `Provider<ServiceInterface>` class. Use this when you need dependency injection inside the service factory.
+  </Tab>
+</Tabs>
+
+### lb4 interceptor
+
+Generates a global or class-level interceptor in `src/interceptors/`. The interceptor booter automatically discovers and registers files in this directory during `app.boot()`.
+
+```bash
+lb4 interceptor
+? Interceptor name: log
+? Is it a global interceptor? Yes
+? Group name for ordering the global interceptor: logging
+```
+
+**Options:**
+
+| Flag | Description |
+| --- | --- |
+| `--global` | Mark as a global interceptor |
+| `--group` | Group name for ordering global interceptors |
+
+The generated file uses `@globalInterceptor` (for global) or `@injectable` (for class-level) and implements `Provider<Interceptor>`.
+
+### lb4 observer
+
+Generates a lifecycle observer in `src/observers/`. Observers implement `start()` and `stop()` methods called when the application starts or stops.
+
+```bash
+lb4 observer
+? Observer name: startup
+? Groups of the observer startup
+```
+
+**Options:**
+
+| Flag | Description |
+| --- | --- |
+| `--group` | Observer group name for ordering |
+
+The generated class is decorated with `@lifeCycleObserver('groupName')` and implements `LifeCycleObserver`.
+
+### lb4 openapi
+
+Generates TypeScript models, service interfaces, and controller stubs from an OpenAPI 2 or 3 specification file or URL.
+
+```bash
+lb4 openapi --url https://petstore3.swagger.io/api/v3/openapi.json
+# or from a local file
+lb4 openapi petstore.yaml
+```
+
+**Options:**
+
+| Flag | Description |
+| --- | --- |
+| `--url` | URL or file path of the OpenAPI spec |
+| `--validate` | Validate the spec before generating |
+| `--server` | Generate server-side controllers (default: `true`) |
+| `--client` | Generate client-side service proxies |
+
+The generator creates:
+- `src/models/` — one model per schema component
+- `src/controllers/` — one controller per OpenAPI tag
+- `src/services/` — client proxy interfaces (when `--client` is used)
+
+## Common flags
+
+Every `lb4` generator accepts these shared flags:
+
+<AccordionGroup>
+  <Accordion title="--yes / -y">
+    Skips all optional confirmation prompts and uses default values. Required prompts that have no default still appear.
+
+    ```bash
+    lb4 controller --yes
+    ```
+  </Accordion>
+
+  <Accordion title="--config / -c">
+    Provides answers to generator prompts as a JSON string or a path to a JSON file. Useful for automation and CI pipelines.
+
+    ```bash
+    lb4 controller --config '{"name":"Todo","controllerType":"REST"}'
+    # or
+    lb4 controller --config ./answers.json
+    ```
+
+    Combining `--config` with `--yes` fully automates generation:
+
+    ```bash
+    lb4 model --config '{"name":"Product","base":"Entity"}' --yes
+    ```
+  </Accordion>
+
+  <Accordion title="--format">
+    Runs `npm run lint:fix` on the generated files immediately after creation.
+
+    ```bash
+    lb4 controller --format
+    ```
+  </Accordion>
+
+  <Accordion title="--skip-install">
+    Skips running `npm install` after generation. Useful when you plan to install all dependencies at once at the end.
+
+    ```bash
+    lb4 datasource --skip-install
+    ```
+  </Accordion>
+
+  <Accordion title="--package-manager / -pm">
+    Changes the package manager used for dependency installation.
+
+    ```bash
+    lb4 app --package-manager yarn
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Shell autocompletion
+
+Enable tab completion to see all available commands and flags inline:
+
+```bash
+lb4 install-completion
+? Which Shell do you use? bash
+? We will install completion to ~/.bashrc, is it ok? Yes
+```
+
+After reloading your shell, press Tab twice after `lb4` to see available generators:
+
+```bash
+$ lb4 <Tab><Tab>
+app          controller   datasource   extension    interceptor
+model        observer     openapi      relation     repository   service
+```
+
+Press Tab after a generator name to see its flags:
+
+```bash
+$ lb4 controller --<Tab>
+--config         --controllerType  --format
+--help           --skip-install    --yes
+```
+
+To remove autocompletion:
+
+```bash
+lb4 uninstall-completion
+```
+
+## Checking version compatibility
+
+After upgrading the CLI, run `lb4 --version` inside your project to see the list of LoopBack packages compatible with the current CLI version. If the project's installed versions differ, you are prompted to confirm before proceeding.
+
+To update all LoopBack dependencies to the latest compatible versions:
+
+```bash
+npm update
+```
+
+<Tip>
+Use `npm-check` for an interactive upgrade experience: `npx npm-check -u`. Always run your build and test suite after upgrading to catch any breaking changes.
+</Tip>

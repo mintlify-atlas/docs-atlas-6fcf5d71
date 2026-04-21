@@ -1,0 +1,305 @@
+---
+title: "JWT Authentication Extension for LoopBack 4 Apps"
+description: "Add JWT auth to LoopBack 4 with @loopback/authentication-jwt. Covers setup, login endpoints, token secrets, refresh tokens, and custom User models."
+---
+
+The `@loopback/authentication-jwt` extension gives you a ready-to-run JWT authentication system you can mount directly into a LoopBack 4 application. It ships a component, token service, user service, and two repositories — everything you need to issue and verify JSON Web Tokens without writing authentication plumbing from scratch.
+
+<Warning>
+This package is **experimental** (`0.x.y`). APIs may change between releases. It is intended as a reference implementation; review the security model before using it in production.
+</Warning>
+
+## Installation
+
+```bash
+npm install @loopback/authentication-jwt
+```
+
+You also need the base authentication package if you haven't already installed it:
+
+```bash
+npm install @loopback/authentication
+```
+
+## What the component provides
+
+Mounting `JWTAuthenticationComponent` binds the following into your application context:
+
+| Export | Description |
+|---|---|
+| `JWTAuthenticationComponent` | The component that wires everything together |
+| `TokenServiceBindings` | Binding keys for `TOKEN_SERVICE`, `TOKEN_SECRET`, `TOKEN_EXPIRES_IN` |
+| `TokenServiceConstants` | Default secret (`myjwts3cr3t`) and expiry (`21600` seconds) |
+| `UserServiceBindings` | Binding keys for `USER_SERVICE`, `USER_REPOSITORY`, `USER_CREDENTIALS_REPOSITORY`, `DATASOURCE_NAME` |
+| `RefreshTokenServiceBindings` | Binding keys for refresh token service and its datasource |
+| `RefreshTokenConstants` | Default refresh token secret and expiry values |
+| `UserRepository` | Default user repository (reference implementation) |
+| `RefreshTokenRepository` | Stores issued refresh tokens |
+
+## Setting up JWT authentication
+
+<Steps>
+
+### Install dependencies and create a datasource
+
+Run `lb4 datasource` to generate a datasource for persisting users. The example below uses a datasource class named `DbDataSource`.
+
+### Mount the components in your application
+
+Import and mount both `AuthenticationComponent` and `JWTAuthenticationComponent`, then bind your datasource to the user and refresh-token datasource keys.
+
+```typescript
+import {AuthenticationComponent} from '@loopback/authentication';
+import {
+  JWTAuthenticationComponent,
+  MyUserService,
+  UserServiceBindings,
+} from '@loopback/authentication-jwt';
+import {BootMixin} from '@loopback/boot';
+import {ApplicationConfig} from '@loopback/core';
+import {RepositoryMixin} from '@loopback/repository';
+import {RestApplication} from '@loopback/rest';
+import {ServiceMixin} from '@loopback/service-proxy';
+import {DbDataSource} from './datasources';
+
+export class TodoListApplication extends BootMixin(
+  ServiceMixin(RepositoryMixin(RestApplication)),
+) {
+  constructor(options: ApplicationConfig = {}) {
+    super(options);
+
+    // Mount authentication system
+    this.component(AuthenticationComponent);
+    // Mount jwt component
+    this.component(JWTAuthenticationComponent);
+    // Bind datasource for user persistence
+    this.dataSource(DbDataSource, UserServiceBindings.DATASOURCE_NAME);
+
+    this.bind(UserServiceBindings.USER_SERVICE).toClass(MyUserService);
+  }
+}
+```
+
+This is the exact setup used in `examples/todo-jwt/src/application.ts`.
+
+### Add a login endpoint to a controller
+
+Inject the token service, user service, and (optionally) the current user profile into your controller constructor:
+
+```typescript
+@inject(TokenServiceBindings.TOKEN_SERVICE)
+public jwtService: TokenService,
+
+@inject(UserServiceBindings.USER_SERVICE)
+public userService: UserService<User, Credentials>,
+
+@inject(SecurityBindings.USER, {optional: true})
+private user: UserProfile,
+
+@inject(UserServiceBindings.USER_REPOSITORY)
+public userRepository: UserRepository,
+```
+
+Then implement the login function:
+
+```typescript
+async login(
+  @requestBody(CredentialsRequestBody) credentials: Credentials,
+): Promise<{token: string}> {
+  // ensure the user exists, and the password is correct
+  const user = await this.userService.verifyCredentials(credentials);
+
+  // convert a User object into a UserProfile object (reduced set of properties)
+  const userProfile = this.userService.convertToUserProfile(user);
+
+  // create a JSON Web Token based on the user profile
+  const token = await this.jwtService.generateToken(userProfile);
+
+  return {token};
+}
+```
+
+### Protect endpoints with `@authenticate('jwt')`
+
+Decorate any endpoint that should require a valid token:
+
+```typescript
+@authenticate('jwt')
+async whoAmI(): Promise<string> {
+  return this.user[securityId];
+}
+```
+
+</Steps>
+
+## Refresh token support
+
+The extension also includes a refresh token service. To issue both an access token and a refresh token at login, bind the refresh datasource and use `RefreshTokenService`:
+
+```typescript
+import {
+  JWTAuthenticationComponent,
+  RefreshTokenServiceBindings,
+} from '@loopback/authentication-jwt';
+
+// In application constructor:
+this.component(JWTAuthenticationComponent);
+this.dataSource(DbDataSource, UserServiceBindings.DATASOURCE_NAME);
+this.dataSource(DbDataSource, RefreshTokenServiceBindings.DATASOURCE_NAME);
+```
+
+A login endpoint that returns both tokens:
+
+```typescript
+async refreshLogin(
+  @requestBody(CredentialsRequestBody) credentials: Credentials,
+): Promise<TokenObject> {
+  const user = await this.userService.verifyCredentials(credentials);
+  const userProfile: UserProfile = this.userService.convertToUserProfile(user);
+  const accessToken = await this.jwtService.generateToken(userProfile);
+  const tokens = await this.refreshService.generateToken(
+    userProfile,
+    accessToken,
+  );
+  return tokens;
+}
+```
+
+To exchange a refresh token for a new access token:
+
+```typescript
+async refresh(
+  @requestBody(RefreshGrantRequestBody) refreshGrant: RefreshGrant,
+): Promise<TokenObject> {
+  return this.refreshService.refreshToken(refreshGrant.refreshToken);
+}
+```
+
+## Configuration
+
+Override the default token secret and expiry by binding values before the component loads:
+
+```typescript
+// Change the JWT access token secret
+this.bind(TokenServiceBindings.TOKEN_SECRET).to('<yourSecret>');
+
+// Change the JWT access token expiry (in seconds)
+this.bind(TokenServiceBindings.TOKEN_EXPIRES_IN).to('3600');
+
+// Change the refresh token secret
+this.bind(RefreshTokenServiceBindings.TOKEN_SECRET).to('<yourRefreshSecret>');
+
+// Change the refresh token expiry (in seconds)
+this.bind(RefreshTokenServiceBindings.TOKEN_EXPIRES_IN).to('86400');
+```
+
+<Note>
+The defaults are `TOKEN_SECRET_VALUE = 'myjwts3cr3t'` and `TOKEN_EXPIRES_IN_VALUE = '21600'` (6 hours). Always override the secret in production.
+</Note>
+
+## Customizing the User model
+
+The built-in `User` model and `UserRepository` are reference implementations. To replace them:
+
+<Steps>
+
+### Generate your own model and repository
+
+```bash
+lb4 model    # e.g. MyUser
+lb4 repository  # e.g. MyUserRepository
+```
+
+### Implement a custom `UserService`
+
+Create a class that implements `UserService<MyUser, Credentials>` and bind it:
+
+```typescript
+import {UserService} from '@loopback/authentication';
+import {repository} from '@loopback/repository';
+import {HttpErrors} from '@loopback/rest';
+import {securityId, UserProfile} from '@loopback/security';
+import {compare} from 'bcryptjs';
+import {MyUser} from '../models';
+import {MyUserRepository} from '../repositories';
+
+export type Credentials = {
+  email: string;
+  password: string;
+};
+
+export class CustomUserService implements UserService<MyUser, Credentials> {
+  constructor(
+    @repository(MyUserRepository) public userRepository: MyUserRepository,
+  ) {}
+
+  async verifyCredentials(credentials: Credentials): Promise<MyUser> {
+    const invalidCredentialsError = 'Invalid email or password.';
+    const foundUser = await this.userRepository.findOne({
+      where: {email: credentials.email},
+    });
+    if (!foundUser) {
+      throw new HttpErrors.Unauthorized(invalidCredentialsError);
+    }
+    const credentialsFound = await this.userRepository.findCredentials(
+      foundUser.id,
+    );
+    if (!credentialsFound) {
+      throw new HttpErrors.Unauthorized(invalidCredentialsError);
+    }
+    const passwordMatched = await compare(
+      credentials.password,
+      credentialsFound.password,
+    );
+    if (!passwordMatched) {
+      throw new HttpErrors.Unauthorized(invalidCredentialsError);
+    }
+    return foundUser;
+  }
+
+  convertToUserProfile(user: MyUser): UserProfile {
+    return {
+      [securityId]: user.id.toString(),
+      name: user.username,
+      id: user.id,
+      email: user.email,
+    };
+  }
+}
+```
+
+### Bind the custom service and repositories in `application.ts`
+
+```typescript
+import {UserServiceBindings} from '@loopback/authentication-jwt';
+import {CustomUserService} from './services/custom-user-service';
+import {MyUserRepository, MyUserCredentialsRepository} from './repositories';
+
+// In application constructor:
+this.component(JWTAuthenticationComponent);
+this.dataSource(DbDataSource, UserServiceBindings.DATASOURCE_NAME);
+this.bind(UserServiceBindings.USER_SERVICE).toClass(CustomUserService);
+this.bind(UserServiceBindings.USER_REPOSITORY).toClass(MyUserRepository);
+this.bind(UserServiceBindings.USER_CREDENTIALS_REPOSITORY).toClass(
+  MyUserCredentialsRepository,
+);
+```
+
+</Steps>
+
+## Binding key reference
+
+<CardGroup cols={2}>
+  <Card title="TokenServiceBindings" icon="key">
+    `TOKEN_SERVICE` · `TOKEN_SECRET` · `TOKEN_EXPIRES_IN`
+  </Card>
+  <Card title="UserServiceBindings" icon="user">
+    `USER_SERVICE` · `USER_REPOSITORY` · `USER_CREDENTIALS_REPOSITORY` · `DATASOURCE_NAME`
+  </Card>
+  <Card title="RefreshTokenServiceBindings" icon="arrows-rotate">
+    `REFRESH_TOKEN_SERVICE` · `REFRESH_SECRET` · `REFRESH_EXPIRES_IN` · `DATASOURCE_NAME`
+  </Card>
+  <Card title="TokenServiceConstants" icon="clock">
+    `TOKEN_SECRET_VALUE` · `TOKEN_EXPIRES_IN_VALUE`
+  </Card>
+</CardGroup>

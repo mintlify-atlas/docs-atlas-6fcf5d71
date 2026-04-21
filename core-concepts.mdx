@@ -1,0 +1,400 @@
+---
+title: 'LoopBack 4 Core Concepts: Architecture and Building Blocks'
+description: 'A concise reference for every LoopBack 4 building block—Application, Controller, Model, Repository, Context, Dependency Injection, and more.'
+keywords: ['loopback 4 concepts', 'loopback context', 'loopback dependency injection', 'loopback controller', 'loopback repository', 'loopback model']
+---
+
+LoopBack 4 organizes an API or microservice into a set of well-defined building blocks, each with a single responsibility. Understanding what each piece does—and how they depend on one another—makes it much easier to extend, test, and debug a LoopBack application. This page explains every key concept with code drawn directly from the framework source.
+
+## How the pieces fit together
+
+Before diving into individual concepts, here is the high-level dependency chain:
+
+```
+Context / Binding / Dependency Injection   ← infrastructure, runs everything
+  └── Application                          ← container that owns the app lifecycle
+        ├── Server                         ← listens for inbound requests
+        │     ├── Sequence                 ← controls how a request is handled
+        │     │     └── Route             ← maps a URL+method to a controller op
+        │     └── Interceptor             ← wraps method invocations
+        └── Controller                    ← implements business logic
+              ├── Model                   ← describes data shape
+              ├── DataSource              ← connects to an external system
+              └── Repository             ← performs CRUD against a DataSource
+```
+
+A request arrives at the **Server**, travels through a **Sequence** of actions, gets dispatched to a **Route**, which calls a **Controller** method. The controller uses **Repositories** to read and write **Models** to a **DataSource**. All of these artifacts are registered in a **Context** and resolved through **Dependency Injection**.
+
+## Infrastructure
+
+The following concepts are the foundation that makes all other artifacts work together.
+
+<AccordionGroup>
+  <Accordion title="Context">
+    Context is an abstraction of all state and dependencies in your application. LoopBack uses it as a global registry for everything: configurations, classes, instances, and arbitrary values. It is also an [inversion of control](https://en.wikipedia.org/wiki/Inversion_of_control) container.
+
+    An application typically has three context levels, each inheriting from its parent:
+
+    - **Application-level** — stores the initial app state and lives for the entire process lifetime.
+    - **Server-level** — child of application context; holds server-specific configuration like port bindings.
+    - **Request-level** — child of server context; created per request and garbage-collected after the response is sent.
+
+    ```typescript
+    import {Context} from '@loopback/core';
+
+    const rootCtx = new Context('root-ctx');
+    const serverCtx = new Context(rootCtx, 'server-ctx');
+    const reqCtx = new Context(serverCtx); // auto-generated name
+    ```
+
+    <Tip>
+      `@loopback/core` re-exports the full public API of `@loopback/context`. Always import from `@loopback/core` in application code.
+    </Tip>
+
+    You can store and retrieve values by key:
+
+    ```typescript
+    const app = new Application();
+    app.bind('hello').to('world');
+    console.log(app.getSync<string>('hello')); // => 'world'
+    ```
+  </Accordion>
+
+  <Accordion title="Binding">
+    A Binding is a single entry in a Context. Each binding has a unique key within its context and a value provider that resolves to the bound value. Bindings are what you create when you call `ctx.bind(key)`.
+
+    Bindings support different value providers:
+
+    - `.to(value)` — a fixed value
+    - `.toClass(MyClass)` — the Context instantiates the class and injects dependencies
+    - `.toProvider(MyProvider)` — delegates value creation to a `Provider` implementation
+
+    ```typescript
+    // Bind a fixed string
+    app.bind('greeting').to('Hello');
+
+    // Bind a class; dependencies are injected automatically
+    app.bind('services.MyService').toClass(MyService);
+    ```
+  </Accordion>
+
+  <Accordion title="Dependency Injection">
+    Dependency Injection (DI) separates the construction of a class's dependencies from its behavior. Instead of a class creating its own dependencies, LoopBack resolves and injects them based on `@inject` decorators.
+
+    LoopBack supports three forms of injection:
+
+    **Constructor injection** (most common):
+
+    ```typescript
+    class ProductController {
+      constructor(
+        @inject('repositories.Product') private repo: ProductRepository,
+      ) {}
+
+      async list() {
+        return this.repo.find({where: {available: true}});
+      }
+    }
+    ```
+
+    **Property injection** (for optional dependencies):
+
+    ```typescript
+    class InfoController {
+      @inject('logger', {optional: true})
+      private logger = new ConsoleLogger();
+    }
+    ```
+
+    **Method injection**:
+
+    ```typescript
+    class InfoController {
+      greet(@inject(SecurityBindings.USER) user: UserProfile) {
+        return `Hello, ${user.name}`;
+      }
+    }
+    ```
+
+    DI makes unit testing straightforward—inject a mock or stub in place of a real dependency without changing the class under test.
+  </Accordion>
+
+  <Accordion title="Component">
+    A Component bundles one or more LoopBack extensions into a single package that can be mounted on an Application. Components typically register bindings, controllers, repositories, and providers.
+
+    ```typescript
+    import {RestExplorerComponent} from '@loopback/rest-explorer';
+
+    // In your Application constructor:
+    this.component(RestExplorerComponent);
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Application and server
+
+<AccordionGroup>
+  <Accordion title="Application">
+    `Application` is the central class for setting up all of your module's components, controllers, servers, and bindings. It extends `Context` and provides lifecycle controls—`start()` and `stop()`—for itself and its associated servers.
+
+    In practice you always create a subclass of `Application` (or of `RestApplication`, which already configures an HTTP server):
+
+    ```typescript
+    import {BootMixin} from '@loopback/boot';
+    import {ApplicationConfig} from '@loopback/core';
+    import {RepositoryMixin} from '@loopback/repository';
+    import {RestApplication} from '@loopback/rest';
+    import {ServiceMixin} from '@loopback/service-proxy';
+
+    export class TodoListApplication extends BootMixin(
+      ServiceMixin(RepositoryMixin(RestApplication)),
+    ) {
+      constructor(options: ApplicationConfig = {}) {
+        super(options);
+        this.projectRoot = __dirname;
+      }
+    }
+    ```
+
+    The mixin pattern (`BootMixin`, `RepositoryMixin`, `ServiceMixin`) adds capabilities without deep inheritance.
+  </Accordion>
+
+  <Accordion title="Server">
+    A Server is an implementation for an inbound transport or protocol—REST (HTTP/HTTPS), gRPC, GraphQL, WebSocket, and so on. It typically listens on a specific host and port, handles incoming requests, and returns responses.
+
+    `@loopback/rest` provides `RestServer`, which sets up an HTTP/S server and defines routes from your controllers. You configure it by binding values to `RestBindings` keys:
+
+    ```typescript
+    // In Application.start():
+    app.bind(RestBindings.PORT).to(3000);
+    ```
+  </Accordion>
+
+  <Accordion title="Sequence">
+    A Sequence is a stateless grouping of Actions that control how a Server responds to a request. The default `DefaultSequence` in `@loopback/rest` finds the matching route, parses parameters, calls the controller method, and sends the response.
+
+    You can extend the default sequence to add cross-cutting concerns like authentication or logging:
+
+    ```typescript
+    import {DefaultSequence, RestBindings, RequestContext} from '@loopback/rest';
+
+    class MySequence extends DefaultSequence {
+      async handle(context: RequestContext) {
+        const req = await this.ctx.get(RestBindings.Http.REQUEST);
+        const res = await this.ctx.get(RestBindings.Http.RESPONSE);
+        this.send(res, `hello ${req.query.name}`);
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Route">
+    A Route is the mapping between an API specification and an Operation. It tells LoopBack which operation to invoke when given an HTTP request matching a particular method and path.
+
+    When you use the `@get`, `@post`, `@put`, `@patch`, or `@del` decorators on a controller method, LoopBack registers the route and generates the corresponding OpenAPI path object automatically.
+
+    ```typescript
+    import {get} from '@loopback/rest';
+
+    export class HelloController {
+      @get('/hello')
+      hello(): string {
+        return 'Hello world!';
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Interceptor">
+    An Interceptor is a function that wraps static or instance method invocations on a class or object. Interceptors are useful for cross-cutting concerns such as logging, caching, and authorization that apply to many methods.
+
+    ```typescript
+    import {injectable, Interceptor, InvocationContext, Next} from '@loopback/core';
+
+    const logInterceptor: Interceptor = async (ctx: InvocationContext, next: Next) => {
+      console.log('Before:', ctx.targetName);
+      const result = await next();
+      console.log('After:', ctx.targetName);
+      return result;
+    };
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Data layer
+
+<AccordionGroup>
+  <Accordion title="Model">
+    A Model describes the shape of a business domain object—its properties, types, and constraints. Models in LoopBack 4 are plain TypeScript classes annotated with `@model` and `@property` decorators from `@loopback/repository`.
+
+    <Note>
+      Models describe data shape. CRUD behavior is provided by Repositories, not by models. This is different from LoopBack 3.x, where models implemented behavior directly.
+    </Note>
+
+    There are two kinds of models:
+
+    - **Entity** — has an identity (ID property). Two instances with the same ID are considered equal.
+    - **Model** — no identity; equality is based on structural value.
+
+    ```typescript
+    import {Entity, model, property} from '@loopback/repository';
+
+    @model()
+    export class Customer extends Entity {
+      @property({id: true, generated: true})
+      id: number;
+
+      @property({type: 'string', required: true})
+      name: string;
+
+      @property({type: 'string'})
+      email: string;
+
+      constructor(data?: Partial<Customer>) {
+        super(data);
+      }
+    }
+    ```
+
+    The `@model` and `@property` decorators also drive JSON Schema generation (`@loopback/repository-json-schema`) and OpenAPI schema generation, so a single model definition propagates to validation, documentation, and persistence.
+  </Accordion>
+
+  <Accordion title="DataSource">
+    A DataSource is a named configuration for a Connector instance that represents data in an external system—a relational database, a NoSQL store, a REST service, and so on.
+
+    DataSources are typically defined as JSON config files or TypeScript classes in `src/datasources/` and injected into repositories:
+
+    ```typescript
+    import {juggler} from '@loopback/repository';
+
+    const config = {
+      name: 'db',
+      connector: 'memory',
+    };
+
+    export class DbDataSource extends juggler.DataSource {
+      static dataSourceName = 'db';
+
+      constructor() {
+        super(config);
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Repository">
+    A Repository is a type of service that represents a collection of data within a DataSource. It provides the CRUD methods (`find`, `findById`, `create`, `updateById`, `deleteById`, etc.) for a specific model.
+
+    ```typescript
+    import {DefaultCrudRepository} from '@loopback/repository';
+    import {Customer} from '../models';
+    import {DbDataSource} from '../datasources';
+    import {inject} from '@loopback/core';
+
+    export class CustomerRepository extends DefaultCrudRepository<
+      Customer,
+      typeof Customer.prototype.id
+    > {
+      constructor(@inject('datasources.db') dataSource: DbDataSource) {
+        super(Customer, dataSource);
+      }
+    }
+    ```
+
+    Repositories are injected into controllers using the `@repository` decorator:
+
+    ```typescript
+    import {repository} from '@loopback/repository';
+    import {get} from '@loopback/rest';
+    import {CustomerRepository} from '../repositories';
+
+    export class CustomerController {
+      constructor(
+        @repository(CustomerRepository)
+        private customerRepo: CustomerRepository,
+      ) {}
+
+      @get('/customers')
+      async list() {
+        return this.customerRepo.find();
+      }
+    }
+    ```
+
+    <Tip>
+      A single model can be used with multiple different repositories, for example one backed by a SQL database and another using an in-memory store for tests.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="Relation">
+    A Relation is a mapping between two models that describes a real-world link between them. LoopBack uses relation decorators (`@hasMany`, `@belongsTo`, `@hasOne`, `@referencesMany`) to expose CRUD APIs automatically based on the configured association.
+
+    ```typescript
+    import {Entity, model, property, hasMany} from '@loopback/repository';
+    import {Order} from './order.model';
+
+    @model()
+    export class Customer extends Entity {
+      @property({id: true, generated: true})
+      id: number;
+
+      @hasMany(() => Order)
+      orders: Order[];
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Controller and decorators
+
+<AccordionGroup>
+  <Accordion title="Controller">
+    A Controller is a class that implements operations defined by the application's REST API. It acts as the bridge between the HTTP/REST layer and the domain model. Controllers only operate on processed, validated input and abstractions of backend services—they never interact with the database directly.
+
+    ```typescript
+    import {get, param, HttpErrors} from '@loopback/rest';
+    import {repository} from '@loopback/repository';
+    import {HelloRepository} from '../repositories';
+    import {HelloMessage} from '../models';
+
+    export class HelloController {
+      constructor(
+        @repository(HelloRepository)
+        protected repo: HelloRepository,
+      ) {}
+
+      @get('/messages')
+      async list(
+        @param.query.number('limit') limit = 10,
+      ): Promise<HelloMessage[]> {
+        if (!Number.isInteger(limit) || limit < 1) {
+          throw new HttpErrors.UnprocessableEntity('limit is not a natural number');
+        }
+        if (limit > 100) limit = 100;
+        return this.repo.find({limit});
+      }
+    }
+    ```
+
+    The `@get('/messages')` decorator creates the OpenAPI path item and registers the route. The `@param.query.number('limit')` decorator adds the parameter definition to the spec and coerces the incoming query string value to a number.
+  </Accordion>
+
+  <Accordion title="Decorator">
+    Decorators are the pattern LoopBack uses to annotate class declarations and their members with metadata. They are plain TypeScript decorators (`experimentalDecorators: true`) applied at design time.
+
+    Common decorators and where they come from:
+
+    | Decorator | Package | Purpose |
+    | --- | --- | --- |
+    | `@model`, `@property` | `@loopback/repository` | Mark model classes and properties |
+    | `@get`, `@post`, `@put`, `@del` | `@loopback/rest` | Register HTTP routes |
+    | `@param` | `@loopback/rest` | Declare path, query, header, and body params |
+    | `@inject` | `@loopback/core` | Inject a binding value by key |
+    | `@repository` | `@loopback/repository` | Inject a repository instance |
+    | `@service` | `@loopback/core` | Inject a service instance |
+    | `@api` | `@loopback/rest` | Annotate a controller with a full OpenAPI spec |
+    | `@intercept` | `@loopback/core` | Apply an interceptor to a method or class |
+
+    Decorators attach metadata that the framework reads at startup to configure routes, resolve bindings, and generate OpenAPI schemas—without requiring any separate configuration files.
+  </Accordion>
+</AccordionGroup>

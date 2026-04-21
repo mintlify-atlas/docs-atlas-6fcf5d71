@@ -1,22 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "LoopBack 4",
+  "projectType": "framework",
+  "projectName": "LoopBack 4",
+  "projectDescription": "A highly extensible Node.js and TypeScript framework for building REST APIs and microservices with built-in dependency injection, OpenAPI support, and a powerful repository pattern.",
   "theme": "palm",
-  "colors": {
-    "primary": "#3c5cfc"
-  },
-  "favicon": "https://media.brand.dev/42d524a7-e7af-4e0b-a0f0-0b68b2b11286.png",
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/loopbackio/loopback-next"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/loopbackio/loopback-next"
-    }
-  },
+  "primaryColor": "#3c5cfc",
+  "lightColor": null,
+  "darkColor": null,
   "navigation": {
     "tabs": [
       {
@@ -97,5 +86,33 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "IoC container and dependency injection with @inject decorators",
+    "REST server with automatic OpenAPI 3.0 specification generation",
+    "Repository pattern for database-agnostic data access",
+    "Model relations: hasMany, belongsTo, hasOne, hasManyThrough, referencesMany",
+    "Pluggable authentication and authorization components",
+    "CLI scaffolding tool (lb4) for apps, controllers, models, repositories",
+    "Component system for modular, extensible architecture",
+    "Interceptors for cross-cutting concerns (logging, caching, etc.)",
+    "Express middleware integration",
+    "TypeScript-first with strict type safety"
+  ],
+  "publicApiSurface": [
+    "@loopback/core — Application, Component, Server, BindingKey, inject, @injectable",
+    "@loopback/rest — RestApplication, RestServer, get/post/put/patch/del, @requestBody, @param",
+    "@loopback/repository — DefaultCrudRepository, Entity, Model, @model, @property, @hasMany, @belongsTo",
+    "@loopback/context — Context, Binding, Provider, @inject, @intercept",
+    "@loopback/authentication — @authenticate, AuthenticationComponent, AuthenticationStrategy",
+    "@loopback/authorization — @authorize, AuthorizationComponent, Authorizer",
+    "@loopback/boot — BootMixin, ApplicationConfig",
+    "@loopback/service-proxy — ServiceMixin, @serviceProxy",
+    "lb4 app — scaffold a new LoopBack application",
+    "lb4 controller — generate a REST controller",
+    "lb4 model — generate a model class",
+    "lb4 repository — generate a repository",
+    "lb4 datasource — configure a data source",
+    "lb4 relation — generate model relations"
+  ]
 }

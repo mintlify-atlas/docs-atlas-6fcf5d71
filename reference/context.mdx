@@ -1,0 +1,615 @@
+---
+title: "@loopback/context — IoC Container and Dependency Injection"
+description: "API reference for @loopback/context: Context, Binding, BindingScope, @inject decorator variants, Provider, and ContextView for LoopBack 4 IoC."
+keywords: ["loopback", "context", "dependency injection", "IoC", "binding", "inject decorator", "provider"]
+---
+
+The `@loopback/context` package is the inversion-of-control (IoC) container at the heart of LoopBack 4. It lets you register artifacts (values, classes, or providers) under string keys, declare dependencies with decorators, and resolve everything through a hierarchical context chain. You can use this package independently of the rest of LoopBack.
+
+```bash
+npm install @loopback/context
+```
+
+<Note>
+Application code should typically import from `@loopback/core`, which re-exports the entire `@loopback/context` public API alongside core framework types.
+</Note>
+
+## Context class
+
+`Context` extends `EventEmitter` and acts as a registry of `Binding` objects. Contexts can form a parent–child hierarchy: child contexts inherit bindings from ancestors but can override them locally.
+
+```typescript
+import {Context} from '@loopback/context';
+
+// Root context
+const appCtx = new Context('application');
+
+// Child context inheriting from appCtx
+const reqCtx = new Context(appCtx, 'request');
+```
+
+<AccordionGroup>
+  <Accordion title="constructor">
+
+```typescript
+constructor(_parent?: Context | string, name?: string)
+```
+
+Creates a new context. If `_parent` is a string, it is treated as the name and no parent is set. If a `Context` is passed, it becomes the parent.
+
+  </Accordion>
+
+  <Accordion title="bind">
+
+```typescript
+bind<ValueType = BoundValue>(
+  key: BindingAddress<ValueType>,
+): Binding<ValueType>
+```
+
+Creates a new `Binding` for the given key and registers it in this context. Returns the binding so you can chain configuration methods. Throws if a locked binding already exists for the key.
+
+```typescript
+ctx.bind('greeting').to('Hello, world');
+```
+
+  </Accordion>
+
+  <Accordion title="add">
+
+```typescript
+add(binding: Binding<unknown>): this
+```
+
+Registers an already-configured `Binding` object. Use this when you build a binding outside the context (e.g., via `createBindingFromClass`).
+
+  </Accordion>
+
+  <Accordion title="get / getSync">
+
+```typescript
+get<ValueType>(
+  keyWithPath: BindingAddress<ValueType>,
+  options?: ResolutionOptions,
+): Promise<ValueType | undefined>
+
+getSync<ValueType>(
+  keyWithPath: BindingAddress<ValueType>,
+  options?: ResolutionOptions,
+): ValueType | undefined
+```
+
+Resolves the value bound to `keyWithPath`. You can append a `#property.path` suffix to retrieve a nested property. Pass `{optional: true}` to receive `undefined` instead of an error when the key is missing.
+
+```typescript
+const greeting = await ctx.get<string>('greeting');
+const port = ctx.getSync<number>('config#rest.port');
+```
+
+<Warning>
+Avoid `getSync` in production code for bindings backed by async factories—it throws if the resolved value is a Promise.
+</Warning>
+
+  </Accordion>
+
+  <Accordion title="find / findByTag">
+
+```typescript
+find<ValueType = BoundValue>(
+  pattern?: string | RegExp | BindingFilter,
+): Readonly<Binding<ValueType>>[]
+
+findByTag<ValueType = BoundValue>(
+  tagFilter: BindingTag | RegExp,
+): Readonly<Binding<ValueType>>[]
+```
+
+Returns all bindings matching a key pattern, regular expression, filter function, or tag. Results from the current context take precedence over parent bindings with the same key.
+
+```typescript
+const controllers = ctx.findByTag('controller');
+```
+
+  </Accordion>
+
+  <Accordion title="isBound / contains">
+
+```typescript
+isBound(key: BindingAddress): boolean
+contains(key: BindingAddress): boolean
+```
+
+`isBound` checks the full context chain; `contains` checks only the local registry.
+
+  </Accordion>
+
+  <Accordion title="configure / getConfig">
+
+```typescript
+configure<ConfigValueType = BoundValue>(
+  key: BindingAddress,
+): Binding<ConfigValueType>
+
+getConfig<ConfigValueType>(
+  key: BindingAddress,
+  propertyPath?: string,
+  resolutionOptions?: ResolutionOptions,
+): Promise<ConfigValueType | undefined>
+```
+
+Creates or retrieves a companion binding at `<key>:$config` used to store configuration for the target binding.
+
+  </Accordion>
+
+  <Accordion title="createView">
+
+```typescript
+createView<T = unknown>(
+  filter: BindingFilter,
+  comparator?: BindingComparator,
+  options?: Omit<ResolutionOptions, 'session'>,
+): ContextView<T>
+```
+
+Creates a `ContextView` that observes matching bindings live. The view updates automatically when bindings are added or removed.
+
+  </Accordion>
+
+  <Accordion title="unbind">
+
+```typescript
+unbind(key: BindingAddress): boolean
+```
+
+Removes a binding from this context. Returns `true` if the binding was found and removed. Does not affect parent contexts.
+
+  </Accordion>
+
+  <Accordion title="close">
+
+```typescript
+close(): void
+```
+
+Cleans up subscriptions and event listeners. Call this when a context instance (for example, a request context) is no longer needed to prevent memory leaks.
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Binding class
+
+A `Binding` maps a key to a value source and controls how that value is cached (its scope). Every call to `ctx.bind(key)` returns a `Binding` you can configure with a fluent API.
+
+<AccordionGroup>
+  <Accordion title="to — constant value">
+
+```typescript
+to(value: T): this
+```
+
+Binds the key to a constant value. Promise instances are not allowed—use `toDynamicValue` for async values.
+
+```typescript
+ctx.bind('appName').to('MyApp');
+```
+
+  </Accordion>
+
+  <Accordion title="toDynamicValue — factory function">
+
+```typescript
+toDynamicValue(
+  factory: ValueFactory<T> | DynamicValueProviderClass<T>,
+): this
+```
+
+Binds the key to a function (or a class with a static `value` method) that is called each time the value is resolved.
+
+```typescript
+ctx.bind('timestamp').toDynamicValue(() => Date.now());
+```
+
+  </Accordion>
+
+  <Accordion title="toClass — class instantiation">
+
+```typescript
+toClass<C extends T & object>(ctor: Constructor<C>): this
+```
+
+Instantiates the class via the IoC container, resolving constructor arguments marked with `@inject`.
+
+```typescript
+ctx.bind('services.MyService').toClass(MyService);
+```
+
+  </Accordion>
+
+  <Accordion title="toProvider — Provider class">
+
+```typescript
+toProvider(providerClass: Constructor<Provider<T>>): this
+```
+
+Instantiates the provider class (which must implement `value(): ValueOrPromise<T>`) and returns the result of calling `value()`.
+
+```typescript
+ctx.bind('services.token').toProvider(TokenProvider);
+```
+
+  </Accordion>
+
+  <Accordion title="toAlias — alias to another key">
+
+```typescript
+toAlias(keyWithPath: BindingAddress<T>): this
+```
+
+Delegates resolution to another binding key, optionally with a property path.
+
+```typescript
+ctx.bind('rest.port').toAlias('config#rest.port');
+```
+
+  </Accordion>
+
+  <Accordion title="inScope — binding scope">
+
+```typescript
+inScope(scope: BindingScope): this
+```
+
+Sets the caching scope for the resolved value. See `BindingScope` below.
+
+```typescript
+ctx.bind('services.db').toClass(DbService).inScope(BindingScope.SINGLETON);
+```
+
+  </Accordion>
+
+  <Accordion title="tag — binding tags">
+
+```typescript
+tag(...tags: BindingTag[]): this
+```
+
+Adds one or more tags to the binding. Tags can be plain strings or name/value objects. Use `ctx.findByTag()` to retrieve bindings by tag.
+
+```typescript
+ctx.bind('controllers.MyController').toClass(MyController).tag('controller');
+```
+
+  </Accordion>
+
+  <Accordion title="lock / unlock">
+
+```typescript
+lock(): this
+unlock(): this
+```
+
+A locked binding cannot be rebound or unbound. Attempting to do so throws an error.
+
+  </Accordion>
+
+  <Accordion title="apply — binding templates">
+
+```typescript
+apply(...templateFns: BindingTemplate<T>[]): this
+```
+
+Applies one or more template functions to configure the binding, useful for reusing common configurations.
+
+```typescript
+const asSingleton = (b: Binding) => b.inScope(BindingScope.SINGLETON);
+ctx.bind('services.cache').toClass(CacheService).apply(asSingleton);
+```
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## BindingScope enum
+
+`BindingScope` controls how resolved values are cached and shared across the context hierarchy.
+
+```typescript
+export enum BindingScope {
+  TRANSIENT = 'Transient',
+  SINGLETON = 'Singleton',
+  APPLICATION = 'Application',
+  SERVER = 'Server',
+  REQUEST = 'Request',
+  CONTEXT = 'Context', // deprecated
+}
+```
+
+<AccordionGroup>
+  <Accordion title="TRANSIENT">
+
+A new value is produced on every resolution. This is the default scope when none is set.
+
+  </Accordion>
+
+  <Accordion title="SINGLETON">
+
+The value is computed once in the owning context and reused for all child contexts. Useful for services that hold shared state across the application.
+
+  </Accordion>
+
+  <Accordion title="APPLICATION">
+
+The value is cached in the context whose `scope` property equals `BindingScope.APPLICATION`. Semantically equivalent to SINGLETON in a standard LoopBack app, but explicit about the lifecycle boundary.
+
+  </Accordion>
+
+  <Accordion title="SERVER">
+
+The value is cached per server context. When an application has multiple servers (e.g., REST and gRPC), each server gets its own cached instance.
+
+  </Accordion>
+
+  <Accordion title="REQUEST">
+
+The value is cached per request context. Ideal for controllers, services, or artifacts that should have a single instance for the duration of one HTTP request.
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## @inject decorator variants
+
+Use `@inject` and its variants to declare dependencies on constructor parameters or class properties.
+
+<AccordionGroup>
+  <Accordion title="@inject">
+
+```typescript
+function inject(
+  bindingSelector: BindingSelector,
+  metadata?: InjectionMetadata,
+  resolve?: ResolverFunction,
+): ParameterDecorator | PropertyDecorator
+```
+
+Injects the value bound to `bindingSelector`. Pass a binding key string or a filter function. Set `metadata.optional = true` to receive `undefined` when no value is bound.
+
+```typescript
+class MyController {
+  constructor(
+    @inject('services.greeter') private greeter: GreeterService,
+  ) {}
+}
+```
+
+  </Accordion>
+
+  <Accordion title="@inject.getter">
+
+```typescript
+inject.getter(
+  bindingSelector: BindingSelector<unknown>,
+  metadata?: InjectionMetadata,
+): ParameterDecorator | PropertyDecorator
+```
+
+Injects a `Getter<T>` function instead of the value itself. Call the getter later (for example, after other sequence actions run) to lazily resolve the binding.
+
+```typescript
+class MyAction {
+  constructor(
+    @inject.getter('authentication.currentUser')
+    private getUser: Getter<UserProfile>,
+  ) {}
+
+  async execute() {
+    const user = await this.getUser();
+  }
+}
+```
+
+  </Accordion>
+
+  <Accordion title="@inject.setter">
+
+```typescript
+inject.setter(
+  bindingKey: BindingAddress,
+  metadata?: InjectBindingMetadata,
+): ParameterDecorator | PropertyDecorator
+```
+
+Injects a `Setter<T>` function. Call it with a value to bind that value to the key at runtime.
+
+```typescript
+class AuthAction {
+  constructor(
+    @inject.setter('authentication.currentUser')
+    private setUser: Setter<UserProfile>,
+  ) {}
+
+  async authenticate(profile: UserProfile) {
+    this.setUser(profile);
+  }
+}
+```
+
+  </Accordion>
+
+  <Accordion title="@inject.view">
+
+```typescript
+inject.view(
+  bindingFilter: BindingFilter,
+  metadata?: InjectionMetadata,
+): ParameterDecorator | PropertyDecorator
+```
+
+Injects a live `ContextView<T>` that tracks all bindings matching the filter. The view automatically reflects additions and removals after startup.
+
+```typescript
+class StrategyManager {
+  @inject.view(filterByTag('authentication.strategy'))
+  strategies: ContextView<AuthStrategy[]>;
+}
+```
+
+  </Accordion>
+
+  <Accordion title="@inject.context">
+
+```typescript
+inject.context(): ParameterDecorator | PropertyDecorator
+```
+
+Injects the current `Context` object itself.
+
+```typescript
+class MyProvider implements Provider<string> {
+  constructor(@inject.context() private ctx: Context) {}
+
+  value() {
+    return this.ctx.name;
+  }
+}
+```
+
+  </Accordion>
+
+  <Accordion title="@inject.tag">
+
+```typescript
+inject.tag(
+  bindingTag: BindingTag | RegExp,
+  metadata?: InjectionMetadata,
+): ParameterDecorator | PropertyDecorator
+```
+
+Injects an array of all values whose bindings carry the specified tag.
+
+```typescript
+class AuthManager {
+  constructor(
+    @inject.tag('authentication.strategy') public strategies: Strategy[],
+  ) {}
+}
+```
+
+  </Accordion>
+
+  <Accordion title="@inject.binding">
+
+```typescript
+inject.binding(
+  bindingKey?: string | BindingKey<unknown>,
+  metadata?: InjectBindingMetadata,
+): ParameterDecorator | PropertyDecorator
+```
+
+Injects the `Binding` object itself rather than its resolved value. The binding is found or created according to `metadata.bindingCreation` (`BindingCreationPolicy`).
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## @injectable decorator
+
+```typescript
+function injectable(...specs: BindingSpec[]): ClassDecorator
+```
+
+Marks a class as injectable and attaches binding metadata (scope, tags, etc.) so that `createBindingFromClass` can introspect it.
+
+```typescript
+import {injectable, BindingScope} from '@loopback/context';
+
+@injectable({scope: BindingScope.SINGLETON, tags: {service: 'MyService'}})
+export class MyService {
+  greet(name: string) {
+    return `Hello, ${name}`;
+  }
+}
+```
+
+---
+
+## Provider interface
+
+```typescript
+export interface Provider<T> {
+  value(): ValueOrPromise<T>;
+}
+```
+
+Implement `Provider<T>` when binding creation logic is asynchronous or requires injected dependencies. Bind it with `toProvider()`.
+
+```typescript
+import {Provider, inject} from '@loopback/context';
+
+export class DateProvider implements Provider<Date> {
+  constructor(
+    @inject('config.timezone') private timezone: string,
+  ) {}
+
+  value(): Date {
+    return new Date();
+  }
+}
+
+ctx.bind('currentDate').toProvider(DateProvider);
+```
+
+---
+
+## ContextView class
+
+`ContextView` maintains a live snapshot of all bindings that match a filter, resolving their values on demand. It emits events when the set of matching bindings changes.
+
+```typescript
+class ContextView<T = unknown> extends EventEmitter implements ContextObserver {
+  constructor(
+    public readonly context: Context,
+    public readonly filter: BindingFilter,
+    public readonly comparator?: BindingComparator,
+  )
+
+  open(): void
+  close(): void
+  refresh(): void
+  resolve(): Promise<T[]>
+  values(): Promise<T[]>
+  singleValue(): Promise<T | undefined>
+}
+```
+
+Create a view via `ctx.createView(filter)` rather than the constructor directly.
+
+```typescript
+const view = ctx.createView<AuthStrategy>(filterByTag('strategy'));
+const strategies = await view.values();
+```
+
+<Tip>
+Use `ContextView` inside an extension point to dynamically pick up extensions (such as authentication strategies or body parsers) registered after application startup.
+</Tip>
+
+---
+
+## InterceptorChain
+
+`InterceptorChain` executes a list of interceptors around a target invocation. LoopBack uses this internally for the `@intercept` decorator.
+
+```typescript
+class InterceptorChain<InvocationCtx extends InvocationContext = InvocationContext> {
+  constructor(
+    context: Context,
+    interceptors: InterceptorOrKey[],
+  )
+  invokeInterceptors(next?: Next): ValueOrPromise<InvocationResult>
+}
+```

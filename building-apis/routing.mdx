@@ -1,0 +1,241 @@
+---
+title: 'Request Routing in LoopBack 4: Paths and Parameters'
+description: 'How LoopBack 4 uses an OpenAPI-driven routing table to match HTTP requests to controller methods, coerce parameters, and integrate Express middleware.'
+keywords: ['loopback', 'routing', 'openapi', 'findRoute', 'TrieRouter', 'RegExpRouter', 'express middleware', 'path parameters']
+---
+
+LoopBack 4 routes every incoming HTTP request by consulting a routing table built from the OpenAPI specification it generates at startup. When you annotate a controller method with `@get('/todos/{id}')`, the framework derives an OpenAPI path entry for that operation and registers it in the routing table. At request time, the `FindRoute` action matches the HTTP verb and URL path against that table to locate the correct controller method, then hands control to `ParseParams` and `InvokeMethod` to complete the request cycle.
+
+## How LoopBack builds the routing table
+
+At application startup, LoopBack inspects every bound controller class. For each method decorated with an HTTP verb decorator, it builds an OpenAPI `OperationObject` and registers a route entry pairing the verb+path with the controller class and method name. This means routing metadata lives in one place—the controller source file—and the framework derives both the API specification and the routing table from it.
+
+Examples of how decorators map to routes:
+
+```
+GET  /todos          → TodoController.find       (@get('/todos'))
+GET  /todos/{id}     → TodoController.findById   (@get('/todos/{id}'))
+GET  /todos/count    → TodoController.count      (@get('/todos/count'))
+POST /todos          → TodoController.create     (@post('/todos'))
+PUT  /todos/{id}     → TodoController.replaceById (@put('/todos/{id}'))
+```
+
+<Note>
+Route matching is order-independent. LoopBack's router resolves ambiguity between `/todos/count` and `/todos/{id}` correctly because it distinguishes fixed path segments from variable ones.
+</Note>
+
+## Path syntax
+
+LoopBack uses OpenAPI path syntax, where variable segments are written as `{paramName}` inside curly braces. This is different from Express-style `:paramName`.
+
+```typescript
+@get('/todos/{id}')
+async findById(
+  @param.path.number('id') id: number,
+): Promise<Todo> {
+  return this.todoRepository.findById(id);
+}
+```
+
+The `@param.path.number('id')` decorator tells LoopBack to extract `id` from the URL, coerce it from a string to a JavaScript `number`, and validate it before passing it to your method. You never read `req.params` directly.
+
+## Parameter sources
+
+LoopBack can extract parameters from four locations in the request. Each has a corresponding `@param` shorthand family:
+
+| Source | Decorator family | Example |
+|--------|-----------------|---------|
+| URL path | `@param.path.<type>(name)` | `@param.path.number('id')` |
+| Query string | `@param.query.<type>(name)` | `@param.query.string('q')` |
+| HTTP header | `@param.header.<type>(name)` | `@param.header.string('x-api-key')` |
+| Request body | `@requestBody()` | See body section |
+
+A `<type>` shorthand exists for `string`, `number`, `integer`, `boolean`, `date`, and `object`. For full-object filters, use `@param.filter(Model)` and `@param.where(Model)`.
+
+### Coercion
+
+Path, query, and header parameters arrive as strings from Node.js's `http` module. LoopBack coerces them to the declared TypeScript type before calling your method. For example, `@param.path.number('id')` produces a JavaScript `number`, not the string `"42"`.
+
+### Validation
+
+LoopBack validates parameters against the OpenAPI schema before invoking your method. A value that fails validation—such as a decimal where an integer is expected—causes a `422 Unprocessable Entity` response before your code runs:
+
+```typescript
+@get('/messages')
+async list(
+  @param.query.number('limit') limit = 10,
+): Promise<HelloMessage[]> {
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new HttpErrors.UnprocessableEntity('limit is not a natural number');
+  }
+  return this.repository.find({limit});
+}
+```
+
+### Object query parameters
+
+LoopBack accepts both url-encoded and exploded JSON for object query parameters:
+
+```
+# URL-encoded
+GET /todos?filter=%7B%22where%22%3A%7B%22done%22%3Atrue%7D%7D
+
+# Exploded (extension)
+GET /todos?filter[where][done]=true
+```
+
+## Defining routes without decorators
+
+When you need a route not tied to a controller, you can register it imperatively using `app.route()`:
+
+```typescript
+import {OperationObject, RestApplication, Route} from '@loopback/rest';
+
+const spec: OperationObject = {
+  parameters: [{name: 'name', in: 'query', schema: {type: 'string'}}],
+  responses: {
+    '200': {
+      description: 'greeting text',
+      content: {'application/json': {schema: {type: 'string'}}},
+    },
+  },
+};
+
+function greet(name: string) {
+  return `hello ${name}`;
+}
+
+const app = new RestApplication();
+app.route('get', '/', spec, greet);
+app.start();
+```
+
+You can also define the full OpenAPI spec upfront and pass it to `app.api(spec)`. Any method referenced with `x-operation-name` and `x-controller-name` is resolved against registered controllers.
+
+## Customizing the FindRoute action
+
+The `FindRoute` action is bound to `SequenceActions.FIND_ROUTE`. You can replace it with your own implementation:
+
+```typescript
+import {SequenceActions} from '@loopback/rest';
+
+const yourFindRoute: FindRoute = /* your implementation */;
+app.bind(SequenceActions.FIND_ROUTE).to(yourFindRoute);
+```
+
+## Choosing a router implementation
+
+`@loopback/rest` ships two built-in router implementations:
+
+<Tabs>
+  <Tab title="TrieRouter (default)">
+    Stores routes as a trie tree and uses tree traversal to match requests. Performs better than `RegExpRouter` in benchmarks, especially for large route tables with many path segments. This is the default.
+
+    ```typescript
+    // No configuration needed — TrieRouter is the default
+    ```
+  </Tab>
+  <Tab title="RegExpRouter">
+    Stores routes as an array and uses `path-to-regexp` for matching. You may prefer this if you need regex-based path patterns.
+
+    ```typescript
+    import {RestBindings, RegExpRouter} from '@loopback/rest';
+
+    app.bind(RestBindings.ROUTER).toClass(RegExpRouter);
+    ```
+  </Tab>
+</Tabs>
+
+Both routers optimize fixed paths (no variables) in a separate map so exact-match lookups remain O(1).
+
+## Implementing a custom router
+
+If neither built-in router meets your needs, implement the `RestRouter` interface:
+
+```typescript
+export interface RestRouter {
+  /** Add a route to the router */
+  add(route: RouteEntry): boolean;
+
+  /** Find a matching route for the given http request */
+  find(request: Request): ResolvedRoute | undefined;
+
+  /** List all routes */
+  list(): RouteEntry[];
+}
+```
+
+Bind your implementation to `RestBindings.ROUTER`:
+
+```typescript
+app.bind(RestBindings.ROUTER).toClass(MyCustomRouter);
+```
+
+## Mounting an Express router
+
+For cases where you have existing Express middleware or routes, mount them with `app.mountExpressRouter()`:
+
+```typescript
+import {RestApplication} from '@loopback/rest';
+import express from 'express';
+
+const router = express.Router();
+router.get('/ping', (req, res) => {
+  res.json({ts: Date.now()});
+});
+
+const app = new RestApplication();
+app.mountExpressRouter('/health', router, {
+  // Optional partial OpenAPI spec to document these routes
+  paths: {
+    '/health/ping': {
+      get: {
+        'x-operation-name': 'ping',
+        responses: {'200': {description: 'pong'}},
+      },
+    },
+  },
+});
+```
+
+<Warning>
+Express routes mounted via `mountExpressRouter` do not support dependency injection or LoopBack interceptors. Use controller methods for new endpoints whenever possible.
+</Warning>
+
+## Adding Express middleware
+
+Register Express middleware factories directly on the application or server:
+
+```typescript
+import morgan from 'morgan';
+import {Request, Response} from '@loopback/rest';
+
+const morganFactory = (config?: morgan.Options<Request, Response>) => {
+  return morgan('combined', config);
+};
+
+app.expressMiddleware(morganFactory, {
+  stream: {write: str => console.log(str)},
+});
+```
+
+For middleware that needs to be updated dynamically, pass `{injectConfiguration: 'watch'}` in the options to allow config changes without restarting.
+
+## HTTP redirects
+
+Use `app.redirect()` to redirect one path to another:
+
+```typescript
+app.redirect('/explorer', '/explorer/');
+```
+
+The default status code is `303 See Other`. Pass a third argument to override it.
+
+<CardGroup cols={2}>
+  <Card title="Controllers" icon="code" href="/building-apis/controllers">
+    Write the controller methods that routes invoke.
+  </Card>
+  <Card title="Request & Response" icon="arrows-left-right" href="/building-apis/request-response">
+    Understand the full lifecycle from route match to HTTP response.
+  </Card>
+</CardGroup>

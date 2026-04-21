@@ -1,0 +1,293 @@
+---
+title: 'LoopBack 4 Components: Build and Register Extensions'
+description: 'Package controllers, providers, bindings, and lifecycle observers into a LoopBack 4 component and mount it with app.component() to share reusable features.'
+keywords: ['loopback', 'component', 'providers', 'bindings', 'controllers', 'ioc', 'extensibility']
+---
+
+A LoopBack 4 **component** is an npm package (or local module) that bundles a set of related artifacts — controllers, providers, classes, bindings, and lifecycle observers — into a single unit that any application can mount with one line of code. Components are the primary packaging model for sharing and reusing functionality across LoopBack applications, and they interact directly with the IoC container so every artifact they contribute is automatically available for dependency injection.
+
+## The Component interface
+
+The `Component` interface from `@loopback/core` defines the shape every component class must satisfy. All properties are optional, which means a component can contribute as little or as much as it needs.
+
+```typescript
+// packages/core/src/component.ts
+export interface Component {
+  controllers?: ControllerClass[];
+  providers?: ProviderMap;      // { [key: string]: Constructor<Provider<BoundValue>> }
+  classes?: ClassMap;           // { [key: string]: Constructor<BoundValue> }
+  servers?: { [name: string]: Constructor<Server> };
+  lifeCycleObservers?: Constructor<LifeCycleObserver>[];
+  services?: ServiceOrProviderClass[];
+  bindings?: Binding[];
+  components?: Constructor<Component>[];
+}
+```
+
+When you call `app.component(MyComponent)`, LoopBack instantiates the component class and registers each property into the application context:
+
+| Property | Registration method |
+| --- | --- |
+| `controllers` | `app.controller(cls)` for each class |
+| `providers` | `app.bind(key).toProvider(cls)` for each entry |
+| `classes` | `app.bind(key).toClass(cls)` for each entry |
+| `bindings` | `app.add(binding)` for each binding |
+| `servers` | `app.server(cls, key)` for each entry |
+| `lifeCycleObservers` | `app.lifeCycleObserver(cls)` for each class |
+| `services` | `app.service(cls)` for each class |
+| `components` | `app.component(cls)` recursively |
+
+<Note>
+If your application class is not extended with the required mixin, artifact types that depend on that mixin (such as `repositories` and `models`) are silently ignored. Always check a component's documentation to see if a mixin is required.
+</Note>
+
+## Creating a component
+
+<Steps>
+  <Step title="Implement the Component interface">
+    Create a class that implements `Component` and populate whichever properties are relevant. Set up `Binding` objects in the constructor for anything that requires runtime logic.
+
+    ```typescript
+    import {Component, Binding} from '@loopback/core';
+    import {MyController} from './controllers/my.controller';
+    import {MyValueProvider} from './providers/my-value.provider';
+    import {MyValidator} from './validators/my.validator';
+    import {MyObserver} from './observers/my.observer';
+
+    export class MyComponent implements Component {
+      servers = {
+        'my-server': MyServer,
+      };
+      lifeCycleObservers = [MyObserver];
+      controllers = [MyController];
+      providers = {
+        'my-value': MyValueProvider,
+      };
+      classes = {
+        'my-validator': MyValidator,
+      };
+
+      constructor() {
+        // Create bindings directly when you need fine-grained control
+        const bindingX = Binding.bind('x').to('Value X');
+        const bindingY = Binding.bind('y').toClass(ClassY);
+        this.bindings = [bindingX, bindingY];
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Export typed binding key constants">
+    Use typed `BindingKey` objects instead of plain strings so consumers get compile-time type safety when they inject values from your component.
+
+    ```typescript
+    import {BindingKey} from '@loopback/core';
+    import {MyValue} from './providers/my-value.provider';
+
+    export namespace MyComponentKeys {
+      export const MY_VALUE = BindingKey.create<MyValue>('my-component.my-value');
+    }
+    ```
+
+    <Tip>
+    Prefix all binding keys with a unique namespace (e.g. `my-component.`) to avoid collisions with other components and the framework itself.
+    </Tip>
+  </Step>
+
+  <Step title="Configure peerDependencies correctly">
+    Extensions should use LoopBack modules installed by the target application, not their own copies. Declare framework packages as `peerDependencies` and repeat them in `devDependencies` so tests can run.
+
+    ```json
+    {
+      "name": "my-lb4-extension",
+      "version": "1.0.0",
+      "dependencies": {
+        "tslib": "^2.0.0"
+      },
+      "peerDependencies": {
+        "@loopback/core": "^2.9.1",
+        "@loopback/rest": "^5.2.0"
+      },
+      "devDependencies": {
+        "@loopback/build": "^6.1.0",
+        "@loopback/core": "^2.9.1",
+        "@loopback/rest": "^5.2.0",
+        "@loopback/testlab": "^3.2.0"
+      }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Registering a component
+
+Pass the component class to `app.component()`. LoopBack instantiates the class and mounts all of its artifacts automatically.
+
+```typescript
+import {RestApplication} from '@loopback/rest';
+import {AuthenticationComponent} from '@loopback/authentication';
+
+const app = new RestApplication();
+app.component(AuthenticationComponent);
+```
+
+### Configuring a component
+
+Components can receive options through the `@config()` injection decorator. Call `this.configure()` before `this.component()` in your application constructor.
+
+```typescript
+// In MyComponent
+export class MyComponent implements Component {
+  constructor(
+    @config()
+    options: MyComponentOptions = {enableLogging: false},
+  ) {
+    if (options.enableLogging) {
+      // set up logging
+    }
+  }
+}
+
+// In your Application
+this.configure(MyComponent.COMPONENT).to({enableLogging: true});
+this.component(MyComponent);
+```
+
+## Component lifecycle
+
+A component participates in the application lifecycle by implementing `LifeCycleObserver`. This is useful when a component needs to contribute bindings asynchronously or needs to clean up resources.
+
+```typescript
+import {Component, LifeCycleObserver, CoreBindings, inject} from '@loopback/core';
+
+export class MyComponent implements Component, LifeCycleObserver {
+  status = 'not-initialized';
+
+  constructor(
+    @inject(CoreBindings.APPLICATION_INSTANCE)
+    private app: Application,
+  ) {
+    // Synchronous contributions via constructor
+    this.app.bind('foo').to('bar');
+  }
+
+  async init() {
+    // Asynchronous contributions via init()
+    const val = await readFromConfig();
+    this.app.bind('abc').to(val);
+    this.status = 'initialized';
+  }
+
+  async start() {
+    this.status = 'started';
+  }
+
+  async stop() {
+    this.status = 'stopped';
+  }
+}
+```
+
+<Warning>
+All dependencies injected into the component constructor must be resolvable **synchronously** when `app.component()` is called. Move asynchronous work to the `init()` method.
+</Warning>
+
+## How components interact with the IoC container
+
+Every artifact a component contributes is registered as a **binding** in the application context. The binding key determines where the value lives and how it is located. For example, when `mountComponent` processes a component's `providers` map, it calls `createBindingFromClass` and `app.add(binding)` for each entry:
+
+```typescript
+// Simplified from packages/core/src/component.ts
+export function mountComponent(app: Application, component: Component) {
+  if (component.providers) {
+    for (const providerKey in component.providers) {
+      const binding = createBindingFromClass(component.providers[providerKey], {
+        key: providerKey,
+      });
+      app.add(binding);
+    }
+  }
+
+  if (component.controllers) {
+    for (const controllerCtor of component.controllers) {
+      app.controller(controllerCtor);
+    }
+  }
+  // ... and so on for bindings, servers, lifeCycleObservers, services
+}
+```
+
+Because everything lives in the context, any class in your application can inject a value contributed by a component using `@inject`:
+
+```typescript
+class MyController {
+  constructor(
+    @inject('my-component.my-value')
+    private greeting: string,
+  ) {}
+
+  @get('/greet')
+  greet() {
+    return this.greeting;
+  }
+}
+```
+
+## Built-in components
+
+LoopBack ships several official components you can add to any application:
+
+<CardGroup cols={2}>
+  <Card title="@loopback/rest" icon="globe">
+    The core REST layer. Exposes controllers as REST endpoints, handles routing, request parsing, and the sequence pipeline.
+  </Card>
+  <Card title="@loopback/authentication" icon="lock">
+    Pluggable authentication support. Register strategies (JWT, Passport, etc.) as extensions to the authentication extension point.
+  </Card>
+  <Card title="@loopback/authorization" icon="shield">
+    Role-based and attribute-based access control for controller methods.
+  </Card>
+  <Card title="@loopback/boot" icon="rocket">
+    Convention-based artifact discovery. Scans your `src/` directory and automatically binds controllers, repositories, and more.
+  </Card>
+  <Card title="@loopback/rest-explorer" icon="search">
+    Mounts an OpenAPI explorer UI so you can browse and test your API in the browser.
+  </Card>
+  <Card title="@loopback/health" icon="activity">
+    Exposes `/health` and `/live` endpoints for container orchestration probes.
+  </Card>
+</CardGroup>
+
+### Example: AuthenticationComponent
+
+```typescript
+import {RestApplication} from '@loopback/rest';
+import {AuthenticationComponent} from '@loopback/authentication';
+
+const app = new RestApplication();
+app.component(AuthenticationComponent);
+```
+
+`AuthenticationComponent` binds `AuthenticateActionProvider` to the context, making `@authenticate` available as a decorator on your controller methods.
+
+## Extending an application with mixins
+
+Some components require the application class to be extended with a mixin so additional artifacts (like repositories) are recognized. Use TypeScript mixin composition to apply the required mixins:
+
+```typescript
+import {RepositoryMixin} from '@loopback/repository';
+import {Application} from '@loopback/core';
+import {FooComponent} from './foo.component';
+
+class AppWithRepoMixin extends RepositoryMixin(Application) {}
+
+const app = new AppWithRepoMixin();
+app.component(FooComponent);
+
+// Repositories contributed by FooComponent are now discoverable
+app.find('repositories.*');
+```
+
+<Note>
+`RepositoryMixin` comes from `@loopback/repository`. `BootMixin` from `@loopback/boot` is needed if you want components to contribute booters.
+</Note>

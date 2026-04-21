@@ -1,0 +1,162 @@
+---
+title: "Prometheus Metrics Extension for LoopBack 4"
+description: "Expose a Prometheus /metrics endpoint in LoopBack 4. Covers MetricsComponent setup, built-in Node.js metrics, custom prom-client counters, and config."
+---
+
+The `@loopback/metrics` extension automatically collects Node.js runtime metrics and LoopBack method invocation data, then exposes them at a `/metrics` HTTP endpoint in the Prometheus text format. You can point a Prometheus scrape target at that endpoint without writing any instrumentation code yourself.
+
+<Warning>
+This package is **experimental** (`0.x.y`). APIs may change between releases.
+</Warning>
+
+## Installation
+
+```bash
+npm install @loopback/metrics
+```
+
+## Basic setup
+
+Mount `MetricsComponent` in your application constructor:
+
+```typescript
+import {BootMixin} from '@loopback/boot';
+import {ApplicationConfig} from '@loopback/core';
+import {MetricsComponent} from '@loopback/metrics';
+import {RestApplication} from '@loopback/rest';
+
+export class GreetingApplication extends BootMixin(RestApplication) {
+  constructor(config: ApplicationConfig = {}) {
+    super(config);
+    this.projectRoot = __dirname;
+    this.component(MetricsComponent);
+  }
+}
+```
+
+This is the exact setup from `examples/metrics-prometheus/src/application.ts`. After starting the app, `GET /metrics` returns Prometheus-formatted metrics.
+
+## What metrics are collected
+
+Three categories of metrics are emitted out of the box:
+
+<CardGroup cols={2}>
+  <Card title="Node.js process metrics" icon="microchip">
+    CPU time, memory (heap used/total, resident set), event loop lag, active handles and requests, Node.js version info — all via [prom-client](https://github.com/siimon/prom-client).
+  </Card>
+  <Card title="LoopBack invocation metrics" icon="chart-line">
+    Per-endpoint duration (gauge, histogram, summary) and invocation count, labelled by `targetName`, `method`, `path`, and `statusCode`.
+  </Card>
+  <Card title="Application custom metrics" icon="pen-ruler">
+    Any metrics you register directly using `prom-client` (re-exported from `@loopback/metrics`).
+  </Card>
+  <Card title="Default labels" icon="tag">
+    Attach static key/value labels (e.g. `service`, `version`) to every metric series.
+  </Card>
+</CardGroup>
+
+### Example metric output
+
+```text
+# HELP process_cpu_user_seconds_total Total user CPU time spent in seconds.
+# TYPE process_cpu_user_seconds_total counter
+process_cpu_user_seconds_total 0.132181 1564508354524
+
+# HELP nodejs_eventloop_lag_seconds Lag of event loop in seconds.
+# TYPE nodejs_eventloop_lag_seconds gauge
+nodejs_eventloop_lag_seconds 0.002172946 1564508354526
+
+# HELP loopback_invocation_duration_seconds method invocation
+# TYPE loopback_invocation_duration_seconds gauge
+loopback_invocation_duration_seconds{targetName="TodoController.prototype.find",method="GET",path="/todos",statusCode="200"} 0.0002056
+
+# HELP loopback_invocation_total method invocation count
+# TYPE loopback_invocation_total counter
+loopback_invocation_total{targetName="TodoController.prototype.find",method="GET",path="/todos",statusCode="200"} 1
+```
+
+## Configuration
+
+Call `this.configure()` **before** `this.component()` — the component reads its configuration at registration time.
+
+```typescript
+import {MetricsBindings} from '@loopback/metrics';
+
+this.configure(MetricsBindings.COMPONENT).to({
+  endpoint: {
+    basePath: '/metrics',   // Change the scrape path
+  },
+  defaultMetrics: {
+    timeout: 5000,          // Metric collection interval in ms
+  },
+  defaultLabels: {
+    service: 'api',         // Attach static labels to all series
+    version: '1.0.0',
+  },
+  openApiSpec: false,       // Set to true to expose /metrics in API Explorer
+});
+
+this.component(MetricsComponent);
+```
+
+<Note>
+By default `openApiSpec` is `false`, so the `/metrics` route does not appear in the REST Explorer or the OpenAPI document. Enable it only if you want the endpoint documented.
+</Note>
+
+## Custom metrics with prom-client
+
+`@loopback/metrics` re-exports `prom-client`, so you can create custom counters, gauges, histograms, and summaries without adding a separate dependency:
+
+```typescript
+import {Counter, Gauge, Histogram} from '@loopback/metrics';
+
+// A counter that increments on every email sent
+const emailsSent = new Counter({
+  name: 'emails_sent_total',
+  help: 'Total number of emails sent',
+  labelNames: ['template'],
+});
+
+// In your service method:
+emailsSent.inc({template: 'welcome'});
+```
+
+```typescript
+// A gauge tracking active WebSocket connections
+const activeConnections = new Gauge({
+  name: 'websocket_active_connections',
+  help: 'Number of currently active WebSocket connections',
+});
+
+activeConnections.inc();   // on connect
+activeConnections.dec();   // on disconnect
+```
+
+## Pull vs push modes
+
+Prometheus supports two collection patterns:
+
+<Tabs>
+  <Tab title="Pull (default)">
+    Prometheus scrapes your `/metrics` endpoint on a schedule. This is the standard approach and what `MetricsComponent` sets up automatically.
+
+    Configure your `prometheus.yml` to scrape the endpoint:
+
+    ```yaml
+    scrape_configs:
+      - job_name: 'loopback-app'
+        static_configs:
+          - targets: ['localhost:3000']
+        metrics_path: /metrics
+    ```
+  </Tab>
+  <Tab title="Push">
+    For short-lived or ephemeral jobs that cannot be scraped, use `prom-client`'s `Pushgateway` to push metrics to a Prometheus Pushgateway instance. Import `Pushgateway` from `@loopback/metrics` and call `pushAdd()` from your job logic.
+  </Tab>
+</Tabs>
+
+## MetricsBindings reference
+
+| Key | Description |
+|---|---|
+| `MetricsBindings.COMPONENT` | Binding key for the `MetricsComponent` instance (`components.MetricsComponent`) |

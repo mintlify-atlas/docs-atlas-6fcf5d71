@@ -1,97 +1,77 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "LoopBack 4: Node.js API framework with DI and OpenAPI"
+description: "LoopBack 4 is a TypeScript Node.js framework with dependency injection, OpenAPI spec generation, and a database-agnostic repository pattern for REST APIs."
 ---
 
-## Setting up
+LoopBack 4 is a highly extensible Node.js and TypeScript framework that lets you build modern REST APIs and microservices quickly. It combines a powerful IoC container, automatic OpenAPI 3.0 specification generation, and a database-agnostic repository pattern — so you spend less time on boilerplate and more time on business logic.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Get started" icon="rocket" href="/getting-started">
+    Install the CLI and build your first LoopBack 4 API in minutes
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Core concepts" icon="lightbulb" href="/core-concepts">
+    Understand the key building blocks: Application, Controller, Model, Repository, and more
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Building APIs" icon="code" href="/building-apis/controllers">
+    Define routes, controllers, and request/response handling with TypeScript decorators
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Data access" icon="database" href="/data-access/repositories">
+    Connect to databases with the Repository pattern and define model relations
   </Card>
-</Columns>
+  <Card title="Security" icon="shield" href="/security/authentication">
+    Add authentication and authorization using pluggable strategies
+  </Card>
+  <Card title="CLI reference" icon="terminal" href="/reference/cli/overview">
+    Scaffold apps, models, controllers, and more with the `lb4` CLI
+  </Card>
+</CardGroup>
 
-## Create beautiful pages
+## Why LoopBack 4?
 
-Everything you need to create world-class documentation.
+LoopBack 4 was redesigned from the ground up in TypeScript with three goals: extensibility, type safety, and minimal boilerplate.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
+<CardGroup cols={3}>
+  <Card title="OpenAPI first" icon="file-code">
+    Your TypeScript code is the source of truth — LoopBack automatically generates a valid OpenAPI 3.0 spec from your decorators
   </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
+  <Card title="Dependency injection" icon="puzzle-piece">
+    The IoC container manages all bindings, providers, and observers — no manual wiring required
   </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
+  <Card title="Repository pattern" icon="layer-group">
+    Write database-agnostic code; swap connectors (PostgreSQL, MongoDB, MySQL, in-memory) without changing business logic
   </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+</CardGroup>
 
-## Need inspiration?
+## Get up and running
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Steps>
+  <Step title="Install the CLI">
+    ```bash
+    npm install -g @loopback/cli
+    ```
+  </Step>
+  <Step title="Scaffold a new app">
+    ```bash
+    lb4 app
+    ```
+    Answer the prompts to name your project and select features. The CLI sets up TypeScript compilation, ESLint, and a ping endpoint automatically.
+  </Step>
+  <Step title="Add a model, datasource, and repository">
+    ```bash
+    lb4 model
+    lb4 datasource
+    lb4 repository
+    ```
+    LoopBack generates the files and wires up the dependency injection for you.
+  </Step>
+  <Step title="Start the server">
+    ```bash
+    npm start
+    ```
+    Visit `http://127.0.0.1:3000` to see the API Explorer with your live OpenAPI spec.
+  </Step>
+</Steps>
+
+<Note>
+  LoopBack 4 requires Node.js 18, 20, or 22. Use the Active LTS release (v22) for production workloads.
+</Note>

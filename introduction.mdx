@@ -1,0 +1,91 @@
+---
+title: 'LoopBack 4: TypeScript API Framework for Node.js'
+description: 'Learn what LoopBack 4 is, why it exists, and how its TypeScript-first design, dependency injection, and OpenAPI generation set it apart.'
+keywords: ['loopback 4', 'node.js api framework', 'typescript', 'openapi', 'dependency injection', 'rest api']
+---
+
+LoopBack 4 is an open-source Node.js framework built for creating complex APIs and microservices. It takes a TypeScript-first approach, meaning type safety, decorators, and interfaces are first-class citizens rather than afterthoughts. Where other frameworks make you wire up routing, validation, and documentation separately, LoopBack 4 derives all three from the same annotated class definitions—write a controller method once, and you get the route, the OpenAPI spec, and the request validation for free.
+
+## Why LoopBack 4 exists
+
+Earlier versions of LoopBack were built on JavaScript and relied on runtime configuration objects to describe models and routes. This made large codebases hard to navigate and difficult to extend without forking internal code. LoopBack 4 was rewritten from scratch to address these problems:
+
+- **TypeScript throughout.** Every public API is typed. Decorators like `@get`, `@model`, and `@inject` attach metadata at design time so the framework can introspect your code at startup.
+- **Inversion of control.** The `Context` system manages every artifact in your application—controllers, repositories, services, configuration—through a built-in IoC container. Dependencies are declared with `@inject` rather than constructed inline, making components independently testable.
+- **OpenAPI without the maintenance burden.** Route decorators such as `@get('/path')` and parameter decorators such as `@param.query.string('name')` generate a complete OpenAPI 3.0 specification automatically. You never maintain a separate YAML or JSON file.
+- **Repository pattern for data access.** Models describe shape; repositories provide CRUD behavior. A single model can back multiple repositories, and the repository abstraction keeps database logic out of your controllers.
+
+## Key differentiators
+
+<CardGroup cols={2}>
+  <Card title="TypeScript-first" icon="code">
+    Strict TypeScript with `experimentalDecorators` and `emitDecoratorMetadata` enabled. The compiler catches type errors before they reach production.
+  </Card>
+  <Card title="Dependency injection" icon="arrows-split-up-and-left">
+    Constructor, property, and method injection via `@inject`. The `Context` IoC container resolves the full dependency graph at startup.
+  </Card>
+  <Card title="Automatic OpenAPI generation" icon="file-code">
+    Controller decorators produce a live OpenAPI 3.0 spec. The built-in API Explorer lets you test endpoints without any extra tooling.
+  </Card>
+  <Card title="Repository pattern" icon="database">
+    `@loopback/repository` separates data-shape (models) from data-access (repositories), supporting SQL, NoSQL, and in-memory connectors through a unified interface.
+  </Card>
+</CardGroup>
+
+## Architecture overview
+
+LoopBack 4 lives in a single monorepo at [github.com/loopbackio/loopback-next](https://github.com/loopbackio/loopback-next), managed with Lerna and npm workspaces. The repository is divided into four top-level directories:
+
+| Directory | Purpose |
+| --- | --- |
+| `packages/` | Core framework packages (29 packages). Application code imports from these. |
+| `extensions/` | Optional add-ons: authentication-jwt, graphql, cron, metrics, logging, and more. |
+| `examples/` | Sample applications—`hello-world`, `todo`, `context`, `graphql`, and others. |
+| `docs/` | Jekyll-based documentation source. |
+
+The dependency chain inside `packages/` flows from low-level to high-level:
+
+```
+@loopback/metadata
+  └── @loopback/context
+        └── @loopback/core
+              ├── @loopback/boot
+              └── @loopback/rest
+                    └── @loopback/rest-explorer
+```
+
+Application code should import from `@loopback/core` (which re-exports all of `@loopback/context`'s public API) rather than from `@loopback/context` directly.
+
+<Note>
+`@loopback/context` and `@loopback/metadata` are foundation-level packages—internal building blocks. Your application code always imports from framework-level packages like `@loopback/core`, `@loopback/rest`, and `@loopback/repository`.
+</Note>
+
+## Node.js and version support
+
+| Package | Supported versions |
+| --- | --- |
+| Node.js | 20 (Maintenance LTS), 22 (Active LTS) |
+| npm | 7 or higher |
+
+<Warning>
+Node.js current (v24) is not recommended for production use. Stick to an LTS release.
+</Warning>
+
+LoopBack 4 reached General Availability in October 2018. The minimum end-of-life date is April 2028.
+
+| LoopBack version | Status | Published | EOL |
+| --- | --- | --- | --- |
+| LoopBack 4 | Current | Oct 2018 | Apr 2028 (minimum) |
+| LoopBack 3 | End-of-Life | Dec 2016 | Dec 2020 |
+| LoopBack 2 | End-of-Life | Jul 2014 | Apr 2019 |
+
+## Explore the documentation
+
+<CardGroup cols={2}>
+  <Card title="Getting started" icon="rocket" href="/getting-started">
+    Install the CLI, scaffold a project, and run your first API in under five minutes.
+  </Card>
+  <Card title="Core concepts" icon="book-open" href="/core-concepts">
+    Understand Application, Controller, Model, Repository, Context, and Dependency Injection.
+  </Card>
+</CardGroup>

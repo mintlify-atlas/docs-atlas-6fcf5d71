@@ -1,0 +1,165 @@
+---
+title: "lb4 CLI Overview: LoopBack 4 Command-Line Interface"
+description: "Install and use the lb4 CLI to scaffold LoopBack 4 projects and artifacts. Covers all commands, global flags, shell tab completion, and updating the CLI."
+---
+
+The `lb4` command-line interface is the official scaffolding tool for LoopBack 4. It generates project skeletons, artifacts (controllers, models, repositories, and more), and manages migrations — so you can focus on writing business logic instead of boilerplate. Every generated file follows LoopBack 4's conventions and is ready to extend with your own code.
+
+## Installation
+
+```bash
+npm install -g @loopback/cli
+```
+
+Verify the installation:
+
+```bash
+lb4 --version
+```
+
+This prints the CLI version along with the compatible `@loopback/*` dependency versions bundled with it — useful for bug reports and troubleshooting version mismatches.
+
+## Available commands
+
+Run `lb4 --commands` (or `lb4 -l`) to list every available command:
+
+```bash
+lb4 -l
+```
+
+```
+app                example            observer           service
+controller         extension          openapi            update
+copyright          import-lb3-models  relation
+datasource         interceptor        repository
+discover           model              rest-crud
+```
+
+<CardGroup cols={2}>
+  <Card title="lb4 app" icon="rocket">
+    Scaffold a new LoopBack 4 application with optional Docker, repository, and service mixins.
+  </Card>
+  <Card title="lb4 extension" icon="puzzle-piece">
+    Scaffold a new LoopBack 4 extension package.
+  </Card>
+  <Card title="lb4 controller" icon="sitemap">
+    Generate an empty or REST/CRUD controller for an existing model and repository.
+  </Card>
+  <Card title="lb4 model" icon="database">
+    Generate a model class with typed properties.
+  </Card>
+  <Card title="lb4 datasource" icon="plug">
+    Generate a datasource configuration for a connector.
+  </Card>
+  <Card title="lb4 repository" icon="folder-open">
+    Generate a repository bound to a datasource and model.
+  </Card>
+  <Card title="lb4 relation" icon="link">
+    Generate a HasMany, BelongsTo, HasOne, or ReferencesMany relation.
+  </Card>
+  <Card title="lb4 service" icon="gears">
+    Generate a local service class/provider or a remote REST/SOAP service proxy.
+  </Card>
+  <Card title="lb4 interceptor" icon="shield-halved">
+    Generate a global or local interceptor.
+  </Card>
+  <Card title="lb4 observer" icon="eye">
+    Generate a lifecycle observer.
+  </Card>
+  <Card title="lb4 openapi" icon="file-code">
+    Generate controllers and models from an OpenAPI specification.
+  </Card>
+  <Card title="lb4 import-lb3-models" icon="box-archive">
+    Import and migrate LoopBack 3 model definitions.
+  </Card>
+</CardGroup>
+
+## Getting help
+
+Get help for the CLI itself:
+
+```bash
+lb4 --help
+```
+
+Get help for a specific command:
+
+```bash
+lb4 <command> --help
+```
+
+For example:
+
+```bash
+lb4 model --help
+```
+
+## Common flags
+
+These flags are accepted by most `lb4` commands:
+
+| Flag | Description |
+|---|---|
+| `--yes` | Skip all confirmation prompts and accept defaults |
+| `--config '<json>'` | Pass generator options as a JSON string instead of answering prompts |
+| `--format` | Run Prettier on generated files after scaffolding |
+| `--skip-cache` | Do not use the Yeoman generator cache |
+| `--skip-install` | Skip running `npm install` after generating |
+| `--force-install` | Force `npm install` even if `node_modules` already exists |
+
+Example using `--config` to scaffold a model non-interactively:
+
+```bash
+lb4 model --config '{"name":"Todo","base":"Entity","properties":{"title":{"type":"string","required":true}}}'
+```
+
+## Shell autocompletion
+
+Enable tab completion for `lb4` commands and options:
+
+```bash
+lb4 install-completion
+```
+
+The wizard prompts you to choose your shell (bash, zsh, or fish) and writes the completion script to your shell's rc file. Reload your shell afterward.
+
+After enabling completion, press `Tab` twice after `lb4` to see available commands:
+
+```bash
+$ lb4 <Tab><Tab>
+app                example            observer           service
+controller         extension          openapi            update
+copyright          import-lb3-models  relation
+datasource         interceptor        repository
+discover           model              rest-crud
+```
+
+To uninstall completion:
+
+```bash
+lb4 uninstall-completion
+```
+
+## Updating the CLI
+
+Update the globally installed CLI to the latest version:
+
+```bash
+npm update -g @loopback/cli
+```
+
+After updating, run `lb4 -v` to confirm the new version and its compatible dependency set. If you run an `lb4` generator command inside a project whose dependencies are incompatible with the current CLI version, the CLI warns you and asks whether to continue.
+
+<Note>
+The CLI version used to scaffold a project is recorded in `.yo-rc.json`. This lets the CLI detect version drift in existing projects.
+</Note>
+
+## Naming conventions
+
+LoopBack 4 uses these conventions for all generated artifacts:
+
+| Artifact | Convention | Example |
+|---|---|---|
+| Class name | `PascalCase` | `TodoController` |
+| File name | `kebab-case` dotted | `todo.controller.ts` |
+| Variable name | `camelCase` | `todoRepository` |

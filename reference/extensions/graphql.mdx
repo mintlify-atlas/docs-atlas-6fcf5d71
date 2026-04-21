@@ -1,0 +1,278 @@
+---
+title: "GraphQL Extension for LoopBack 4 Applications"
+description: "Add GraphQL to LoopBack 4 with @loopback/graphql. Covers resolver classes, type-graphql decorators, IoC injection, authorization, and REST middleware mode."
+---
+
+The `@loopback/graphql` extension integrates [GraphQL](https://graphql.org/) into LoopBack 4 using [type-graphql](https://typegraphql.com/) for schema-first, decorator-driven type definitions. Resolver classes participate in LoopBack's IoC container, so you can use `@inject`, `@service`, `@repository`, and `@config` inside them just as you would in a controller.
+
+<Warning>
+This package is **experimental** (`0.x.y`). APIs may change between releases.
+</Warning>
+
+## Installation
+
+```bash
+npm install @loopback/graphql
+```
+
+## What the package provides
+
+`@loopback/graphql` re-exports the entire `type-graphql` public API under camelCase aliases (e.g. `query` instead of `Query`, `resolver` instead of `Resolver`) so your imports stay consistent with LoopBack conventions.
+
+Key exports:
+
+| Export | Description |
+|---|---|
+| `GraphQLComponent` | Component that registers the GraphQL server and booter |
+| `GraphQLServer` | Standalone GraphQL server class |
+| `GraphQLBindings` | All binding keys for the server, resolvers, context, and auth checker |
+| `GraphQLTags` | Binding tags used to identify resolvers and middleware |
+| `resolver`, `query`, `mutation`, `fieldResolver`, `arg`, `objectType`, `field`, etc. | Re-exported camelCase type-graphql decorators |
+
+## Setting up GraphQL as REST middleware
+
+The most common pattern mounts the GraphQL server as middleware inside a `RestApplication`. This lets you serve both REST and GraphQL from the same process.
+
+```typescript
+import {BootMixin} from '@loopback/boot';
+import {ApplicationConfig} from '@loopback/core';
+import {GraphQLBindings, GraphQLComponent} from '@loopback/graphql';
+import {RepositoryMixin} from '@loopback/repository';
+import {RestApplication} from '@loopback/rest';
+
+export class GraphqlDemoApplication extends BootMixin(
+  RepositoryMixin(RestApplication),
+) {
+  constructor(options: ApplicationConfig = {}) {
+    super(options);
+
+    this.component(GraphQLComponent);
+
+    const server = this.getSync(GraphQLBindings.GRAPHQL_SERVER);
+    // Register one or more GraphQL middleware
+    server.middleware((resolverData, next) => {
+      // Invoked for each field resolver, query and mutation operation
+      return next();
+    });
+
+    this.expressMiddleware('middleware.express.GraphQL', server.expressApp);
+
+    // Optional: register a context resolver
+    this.bind(GraphQLBindings.GRAPHQL_CONTEXT_RESOLVER).to(async context => {
+      return {...context};
+    });
+
+    this.projectRoot = __dirname;
+    this.bootOptions = {
+      graphqlResolvers: {
+        dirs: ['graphql-resolvers'],
+        extensions: ['.js'],
+        nested: true,
+      },
+    };
+  }
+}
+```
+
+This is taken directly from `examples/graphql/src/application.ts`.
+
+## Setting up GraphQL as a standalone server
+
+You can also run `GraphQLServer` as a first-class LoopBack server:
+
+```typescript
+import {Application} from '@loopback/core';
+import {GraphQLServer} from '@loopback/graphql';
+
+const app = new Application();
+const serverBinding = app.server(GraphQLServer);
+app.configure(serverBinding.key).to({host: '127.0.0.1', port: 0});
+const server = await app.getServer(GraphQLServer);
+await app.start();
+```
+
+Pass configuration via the `graphql` key of the application config:
+
+```typescript
+const app = new Application({
+  graphql: {
+    asMiddlewareOnly: true,
+  },
+});
+```
+
+## Defining GraphQL types
+
+Use the re-exported `type-graphql` decorators alongside LoopBack's `@model` and `@property` to define entities that work with both GraphQL and LoopBack repositories:
+
+```typescript
+import {Entity, model, property} from '@loopback/repository';
+import {field, Float, ID, Int, objectType} from '@loopback/graphql';
+
+@objectType({description: 'Object representing cooking recipe'})
+@model({settings: {strict: false}})
+export class Recipe extends Entity {
+  @field(type => ID)
+  @property({id: true})
+  id: string;
+
+  @field()
+  @property()
+  title: string;
+
+  @field({nullable: true, description: 'The recipe description with preparation info'})
+  @property()
+  description?: string;
+
+  @field(type => [Int])
+  ratings: number[];
+
+  @field()
+  @property()
+  creationDate: Date;
+
+  @field(type => Float, {nullable: true})
+  get averageRating(): number | null {
+    const ratingsCount = this.ratings.length;
+    if (ratingsCount === 0) return null;
+    const ratingsSum = this.ratings.reduce((a, b) => a + b, 0);
+    return ratingsSum / ratingsCount;
+  }
+}
+```
+
+## Writing resolver classes
+
+Place resolver files in `src/graphql-resolvers/`. The booter auto-discovers and registers them during `app.boot()`.
+
+```typescript
+import {service} from '@loopback/core';
+import {repository} from '@loopback/repository';
+import {
+  arg,
+  fieldResolver,
+  Int,
+  mutation,
+  query,
+  resolver,
+  root,
+  ResolverInterface,
+} from '@loopback/graphql';
+import {Recipe} from '../graphql-types/recipe-type';
+import {RecipeInput} from '../graphql-types/recipe-input';
+import {RecipeRepository} from '../repositories';
+import {RecipeService} from '../services/recipe.service';
+
+@resolver(of => Recipe)
+export class RecipeResolver implements ResolverInterface<Recipe> {
+  constructor(
+    @repository('RecipeRepository')
+    private readonly recipeRepo: RecipeRepository,
+    @service(RecipeService) private readonly recipeService: RecipeService,
+  ) {}
+
+  @query(returns => Recipe, {nullable: true})
+  async recipe(@arg('recipeId') recipeId: string) {
+    return this.recipeRepo.getOne(recipeId);
+  }
+
+  @query(returns => [Recipe])
+  async recipes(): Promise<Recipe[]> {
+    return this.recipeRepo.getAll();
+  }
+
+  @mutation(returns => Recipe)
+  async addRecipe(@arg('recipe') recipe: RecipeInput): Promise<Recipe> {
+    return this.recipeRepo.add(recipe);
+  }
+
+  @fieldResolver()
+  ratingsCount(
+    @root() recipe: Recipe,
+    @arg('minRate', type => Int, {defaultValue: 0.0}) minRate: number,
+  ): number {
+    return this.recipeService.ratingsCount(recipe, minRate);
+  }
+}
+```
+
+<Note>
+Import all type-graphql decorators from `@loopback/graphql`, not directly from `type-graphql`. The re-exported camelCase variants integrate correctly with LoopBack's metadata system.
+</Note>
+
+## Dependency injection in resolvers
+
+All LoopBack DI decorators work inside resolver constructors:
+
+```typescript
+import {inject} from '@loopback/core';
+import {GraphQLBindings} from '@loopback/graphql';
+
+@resolver(of => Recipe)
+export class RecipeResolver implements ResolverInterface<Recipe> {
+  constructor(
+    @repository('RecipeRepository')
+    private readonly recipeRepo: RecipeRepository,
+    @service(RecipeService) private readonly recipeService: RecipeService,
+    // Access the per-request GraphQL resolver data
+    @inject(GraphQLBindings.RESOLVER_DATA) private resolverData: ResolverData,
+  ) {}
+}
+```
+
+## Authorization
+
+Register a custom auth checker and decorate resolvers with `@authorized`:
+
+```typescript
+// In your application constructor:
+this.bind(GraphQLBindings.GRAPHQL_AUTH_CHECKER).to(
+  (resolverData, roles) => {
+    // Return true to allow, false to deny
+    return true;
+  },
+);
+```
+
+```typescript
+@query(returns => Recipe, {nullable: true})
+@authorized('owner')
+async recipe(@arg('recipeId') recipeId: string) {
+  return this.recipeRepo.getOne(recipeId);
+}
+```
+
+## Exporting the GraphQL schema
+
+```typescript
+import {MyApplication} from './application';
+
+async function exportSchema(): Promise<void> {
+  const app = new MyApplication({rest: {port: 3000, host: 'localhost'}});
+  await app.boot();
+  const server = await app.getServer(GraphQLServer);
+  await server.exportGraphQLSchema('./schema.graphql');
+}
+
+exportSchema().catch(err => {
+  console.error('Failed to export schema.', err);
+  process.exit(1);
+});
+```
+
+## GraphQLBindings reference
+
+<CardGroup cols={2}>
+  <Card title="Server & Component" icon="server">
+    `GRAPHQL_SERVER` · `COMPONENT` · `CONFIG`
+  </Card>
+  <Card title="Context & Auth" icon="lock">
+    `GRAPHQL_CONTEXT_RESOLVER` · `GRAPHQL_WS_CONTEXT_RESOLVER` · `GRAPHQL_AUTH_CHECKER`
+  </Card>
+  <Card title="Resolvers" icon="code">
+    `RESOLVERS` · `RESOLVER_DATA` · `RESOLVER_CLASS`
+  </Card>
+  <Card title="Pub/Sub" icon="bolt">
+    `PUB_SUB` — bind a pub/sub engine for GraphQL subscriptions
+  </Card>
+</CardGroup>

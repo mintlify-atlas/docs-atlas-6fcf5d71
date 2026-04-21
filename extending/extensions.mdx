@@ -1,0 +1,278 @@
+---
+title: 'Extension Points and Extensions Pattern in LoopBack 4'
+description: 'Use @extensionPoint, @extensions, and extensionFor() to build pluggable LoopBack 4 systems where features are discovered at runtime via the IoC container.'
+keywords: ['loopback', 'extension point', 'extensions', 'extensionFor', 'ContextView', 'greeter', 'plugin pattern']
+---
+
+The extension point/extension pattern lets you define a **stable contract** (the extension point) that other packages can fulfil with specific implementations (extensions) — without the extension point knowing anything about those implementations at compile time. LoopBack 4 uses this pattern throughout its own framework: `@loopback/boot` exposes a `BootStrapper` extension point that `Booter` classes plug into, `@loopback/rest` exposes a `RequestBodyParser` extension point for content-type handlers, and `@loopback/core` uses `LifeCycleObserver` to notify observers of application start and stop. You can apply the same pattern in your own applications to keep business logic modular and independently deployable.
+
+## Core concepts
+
+- **Extension point**: a class that defines *what* functionality to expect (an interface/contract) and uses the IoC container to discover implementations at runtime.
+- **Extension**: a class that implements the extension point's contract and is registered into the container with a tag that links it to the correct extension point.
+
+The separation means you can add, remove, or swap extensions without touching the extension point class.
+
+## Helper decorators and functions
+
+The following helpers from `@loopback/core` wire everything together:
+
+| Helper | Purpose |
+| --- | --- |
+| `@extensionPoint(name)` | Marks a class as a named extension point |
+| `@extensions()` | Injects a `Getter<T[]>` that fetches current extensions on demand |
+| `@extensions.view()` | Injects a `ContextView<T>` that emits events when extensions change |
+| `@extensions.list()` | Injects a fixed `T[]` snapshot at injection time |
+| `extensionFor(...names)` | `BindingTemplate` that tags a binding as an extension for named point(s) |
+| `extensionFilter(...names)` | `BindingFilter` to find extensions matching a named point |
+| `addExtension(ctx, name, cls)` | Convenience function to register an extension class |
+
+## Defining the contract
+
+Start by declaring the interface and a constant name for the extension point. This keeps the contract in one place so both the extension point and its extensions import from the same file.
+
+```typescript
+// From examples/greeter-extension/src/types.ts
+import {BindingTemplate, extensionFor} from '@loopback/core';
+
+export interface Greeter {
+  language: string;
+  greet(name: string): string;
+}
+
+export const GREETER_EXTENSION_POINT_NAME = 'greeters';
+
+// A reusable binding template for greeter extensions
+export const asGreeter: BindingTemplate = binding => {
+  extensionFor(GREETER_EXTENSION_POINT_NAME)(binding);
+  binding.tag({namespace: 'greeters'});
+};
+```
+
+## Creating an extension point
+
+Decorate the class with `@extensionPoint` and inject extensions using `@extensions()`. When `getGreeters()` is called, LoopBack resolves all bindings currently tagged for this extension point.
+
+```typescript
+// From examples/greeter-extension/src/greeting-service.ts
+import {config, extensionPoint, extensions, Getter} from '@loopback/core';
+import {Greeter, GREETER_EXTENSION_POINT_NAME} from './types';
+
+export interface GreetingServiceOptions {
+  color: string;
+}
+
+@extensionPoint(GREETER_EXTENSION_POINT_NAME)
+export class GreetingService {
+  constructor(
+    @extensions()
+    private getGreeters: Getter<Greeter[]>,
+    @config()
+    public readonly options?: GreetingServiceOptions,
+  ) {}
+
+  async findGreeter(language: string): Promise<Greeter | undefined> {
+    const greeters = await this.getGreeters();
+    return greeters.find(g => g.language === language);
+  }
+
+  async greet(language: string, name: string): Promise<string> {
+    const greeter = await this.findGreeter(language);
+    if (greeter) {
+      return greeter.greet(name);
+    }
+    return `Hello, ${name}!`; // fallback
+  }
+}
+```
+
+<Note>
+`@extensions()` injects a **getter function**, not the extensions themselves. Calling `getGreeters()` always reflects the current set of registered extensions, including any added after the extension point was constructed.
+</Note>
+
+## Registering extensions
+
+Each extension class uses `@injectable(asGreeter)` (or the `extensionFor` template directly) to tag itself for the `greeters` extension point:
+
+```typescript
+// From examples/greeter-extension/src/greeters/greeter-en.ts
+import {injectable} from '@loopback/core';
+import {asGreeter, Greeter} from '../types';
+
+@injectable(asGreeter)
+export class EnglishGreeter implements Greeter {
+  language = 'en';
+
+  greet(name: string) {
+    return `Hello, ${name}!`;
+  }
+}
+```
+
+```typescript
+// From examples/greeter-extension/src/greeters/greeter-cn.ts
+import {config, injectable} from '@loopback/core';
+import {asGreeter, Greeter} from '../types';
+
+export interface ChineseGreeterOptions {
+  nameFirst: boolean;
+}
+
+@injectable(asGreeter)
+export class ChineseGreeter implements Greeter {
+  language = 'zh';
+
+  constructor(
+    @config()
+    private options: ChineseGreeterOptions = {nameFirst: true},
+  ) {}
+
+  greet(name: string) {
+    if (this.options?.nameFirst === false) {
+      return `你好，${name}！`;
+    }
+    return `${name}，你好！`;
+  }
+}
+```
+
+## Packaging extensions in a component
+
+Bundle the extension point and its built-in extensions into a component so applications can mount everything with a single `app.component()` call:
+
+```typescript
+// From examples/greeter-extension/src/component.ts
+import {Binding, Component, createBindingFromClass} from '@loopback/core';
+import {ChineseGreeter} from './greeters/greeter-cn';
+import {EnglishGreeter} from './greeters/greeter-en';
+import {GreetingService} from './greeting-service';
+import {GREETING_SERVICE} from './keys';
+
+export class GreetingComponent implements Component {
+  bindings: Binding[] = [
+    createBindingFromClass(GreetingService, {
+      key: GREETING_SERVICE,
+    }),
+    createBindingFromClass(EnglishGreeter),
+    createBindingFromClass(ChineseGreeter),
+  ];
+}
+```
+
+Mount the component in your application:
+
+```typescript
+// From examples/greeter-extension/src/application.ts
+import {Application} from '@loopback/core';
+import {GreetingComponent} from './component';
+import {GREETING_SERVICE} from './keys';
+
+export class GreetingApplication extends Application {
+  constructor() {
+    super();
+    this.component(GreetingComponent);
+  }
+
+  async main() {
+    const greetingService = await this.get(GREETING_SERVICE);
+    console.log('English:', await greetingService.greet('en', 'Raymond'));
+    console.log('Chinese:', await greetingService.greet('zh', 'Raymond'));
+  }
+}
+```
+
+## Using ContextView for dynamic extension tracking
+
+When extensions can be added or removed at runtime (e.g. in a multi-tenant system or during testing), inject a `ContextView` instead of a getter. `ContextView` emits `bind` and `unbind` events so you can react to changes.
+
+```typescript
+import {ContextView, extensionPoint, extensions} from '@loopback/core';
+
+@extensionPoint(GREETER_EXTENSION_POINT_NAME)
+export class GreetingService {
+  constructor(
+    @extensions.view()
+    public readonly greetersView: ContextView<Greeter>,
+  ) {
+    // React to extensions being added or removed
+    greetersView.on('refresh', () => {
+      console.log('Extensions changed, refreshing cache');
+    });
+  }
+}
+```
+
+If you need a static snapshot that never changes after injection, use `@extensions.list()`:
+
+```typescript
+@extensionPoint(GREETER_EXTENSION_POINT_NAME)
+export class GreetingService {
+  @extensions.list()
+  public greeters: Greeter[];
+}
+```
+
+<Warning>
+`@extensions.list()` captures a snapshot at injection time. Extensions added or removed afterward are **not** reflected in the array.
+</Warning>
+
+## Registering extensions manually
+
+You can register extensions directly without using `@injectable`, which is useful for third-party classes or testing:
+
+```typescript
+import {addExtension} from '@loopback/core';
+
+// Register FrenchGreeter as an extension for 'greeters'
+addExtension(app, GREETER_EXTENSION_POINT_NAME, FrenchGreeter);
+
+// Alternatively, use extensionFor() as a binding template
+app
+  .bind('greeters.FrenchGreeter')
+  .toClass(FrenchGreeter)
+  .apply(extensionFor(GREETER_EXTENSION_POINT_NAME));
+```
+
+An extension can also serve multiple extension points by passing additional names:
+
+```typescript
+extensionFor('greeters', 'translators')(binding);
+```
+
+## Extensions vs. components
+
+Both extensions and components are extensibility mechanisms, but they serve different purposes:
+
+<CardGroup cols={2}>
+  <Card title="Component" icon="package">
+    A packaging unit. Bundles controllers, providers, bindings, and observers into a group that can be mounted onto an application with `app.component()`.
+  </Card>
+  <Card title="Extension" icon="plug">
+    An implementation of a specific extension point contract. Tagged with `extensionFor` so the extension point can discover it via the IoC container.
+  </Card>
+</CardGroup>
+
+In practice, components often *contain* extensions. The `GreetingComponent` above packages both the `GreetingService` extension point and the built-in `EnglishGreeter` and `ChineseGreeter` extensions. Third-party packages can then add more extensions directly to the application context without touching the component.
+
+## Extension lifecycle observers
+
+Extensions can participate in the application lifecycle by implementing `LifeCycleObserver` inside a component:
+
+```typescript
+import {Component, LifeCycleObserver} from '@loopback/core';
+
+export class MyExtensionComponent implements Component {
+  lifeCycleObservers = [MyLifeCycleObserver];
+}
+
+export class MyLifeCycleObserver implements LifeCycleObserver {
+  start() {
+    // Called when app.start() runs
+  }
+  stop() {
+    // Called when app.stop() runs
+  }
+}
+```
+
+Use `@lifeCycleObserver('groupName')` to control ordering across multiple observers.
